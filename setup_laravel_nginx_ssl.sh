@@ -126,15 +126,4 @@ echo "Restarting Nginx and PHP-FPM..."
 sudo systemctl restart nginx
 sudo systemctl restart php8.2-fpm
 
-# Push to GitHub repository (optional step)
-echo "Do you want to push this project back to the GitHub repository? (y/n)"
-read PUSH_TO_REPO
-
-if [ "$PUSH_TO_REPO" = "y" ]; then
-    cd /var/www/laravel
-    git add .
-    git commit -m "Deployed Laravel project with MySQL, PHP 8.2, Nginx, SSL, and Memcached"
-    git push origin main
-fi
-
 echo "Laravel app with SSL setup complete."
