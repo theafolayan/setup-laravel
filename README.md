@@ -19,17 +19,16 @@ Before running this script, ensure that:
 
 ## How to Use
 
-### Step 1: Clone the Repository
+### Step 1: Copy the Script
 
-SSH into your Ubuntu server and clone this repository:
+SSH into your Ubuntu server and copy the script:
 
 ```bash
 wget https://raw.githubusercontent.com/theafolayan/setup-laravel/main/setup_laravel_nginx_ssl.sh
 ```
 
 ## Step 2: Make the Script Executable
-Make the script executable:
-
+Make the script executable: 
 
 ```bash 
 chmod +x setup_laravel_nginx_ssl.sh
