@@ -27,6 +27,9 @@ undo_install() {
                 sudo rm -f /usr/local/bin/composer
             elif [[ $package == "certbot" ]]; then
                 sudo apt-get remove --purge -y certbot python3-certbot-nginx
+            elif [[ $package == "memcached" ]]; then
+                sudo systemctl stop memcached
+                sudo apt-get remove --purge -y memcached
             fi
         done < "$LOG_FILE"
         rm -f "$LOG_FILE"
@@ -126,6 +129,7 @@ echo "Installing and configuring Memcached..."
 sudo apt-get install memcached -y
 sudo systemctl enable memcached
 sudo systemctl start memcached
+log_install "memcached"
 
 # Set up Laravel cache driver for Memcached
 sed -i "s/CACHE_DRIVER=file/CACHE_DRIVER=memcached/" .env
@@ -142,17 +146,17 @@ server {
     index index.php index.html index.htm;
 
     location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files \\$uri \\$uri/ /index.php?\\$query_string;
     }
 
-    location ~ \.php$ {
+    location ~ \\.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME \\$document_root\\$fastcgi_script_name;
         include fastcgi_params;
     }
 
-    location ~ /\.ht {
+    location ~ /\\.ht {
         deny all;
     }
 
