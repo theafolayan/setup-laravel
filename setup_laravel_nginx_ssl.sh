@@ -1,5 +1,49 @@
 #!/bin/bash
 
+LOG_FILE="/var/log/laravel_setup.log"
+
+# Function to log installed components
+log_install() {
+    echo "$1" >> "$LOG_FILE"
+}
+
+# Function to undo installations
+undo_install() {
+    if [[ -f "$LOG_FILE" ]]; then
+        echo "Undoing previous installation..."
+        while read -r package; do
+            if [[ $package == "nginx" ]]; then
+                sudo systemctl stop nginx
+                sudo apt-get remove --purge -y nginx
+                sudo rm -rf /etc/nginx/sites-available/*
+                sudo rm -rf /etc/nginx/sites-enabled/*
+            elif [[ $package == "mysql" ]]; then
+                sudo systemctl stop mysql
+                sudo apt-get remove --purge -y mysql-server mysql-client mysql-common
+                sudo rm -rf /var/lib/mysql
+            elif [[ $package == "php" ]]; then
+                sudo apt-get remove --purge -y php*
+            elif [[ $package == "composer" ]]; then
+                sudo rm -f /usr/local/bin/composer
+            elif [[ $package == "certbot" ]]; then
+                sudo apt-get remove --purge -y certbot python3-certbot-nginx
+            fi
+        done < "$LOG_FILE"
+        rm -f "$LOG_FILE"
+        echo "Previous installation removed. Please rerun the script."
+        exit 1
+    fi
+}
+
+# Check for previous installation and offer to undo
+if [[ -f "$LOG_FILE" ]]; then
+    echo "A previous installation was detected. Do you want to undo it before continuing? (yes/no)"
+    read UNDO
+    if [[ "$UNDO" == "yes" ]]; then
+        undo_install
+    fi
+fi
+
 # Prompt for domain name and Laravel repository URL
 echo "Enter the domain name for this Laravel app (e.g., example.com):"
 read DOMAIN
@@ -7,41 +51,50 @@ read DOMAIN
 echo "Enter the GitHub repository URL of your Laravel project:"
 read REPO_URL
 
+# Ask if MySQL should be installed locally
+echo "Do you want to install MySQL locally? (yes/no)"
+read INSTALL_MYSQL
+
 # Update and upgrade the system
 echo "Updating system..."
-sudo apt-get update -y
-sudo apt-get upgrade -y
+sudo apt-get update -y && sudo apt-get upgrade -y
 
 # Install Nginx
 echo "Installing Nginx..."
 sudo apt-get install nginx -y
+log_install "nginx"
 
-# Install MySQL
-echo "Installing MySQL..."
-sudo apt-get install mysql-server -y
-sudo mysql_secure_installation
+# Install MySQL if user chooses local
+if [[ "$INSTALL_MYSQL" == "yes" ]]; then
+    echo "Installing MySQL..."
+    sudo apt-get install mysql-server -y
+    sudo mysql_secure_installation
+    log_install "mysql"
+
+    # Set up MySQL database
+    echo "Setting up MySQL database..."
+    DBNAME="laravel_db"
+    DBUSER="laravel_user"
+    DBPASS="secure_password"
+
+    sudo mysql -u root -e "CREATE DATABASE ${DBNAME};"
+    sudo mysql -u root -e "CREATE USER '${DBUSER}'@'localhost' IDENTIFIED BY '${DBPASS}';"
+    sudo mysql -u root -e "GRANT ALL PRIVILEGES ON ${DBNAME}.* TO '${DBUSER}'@'localhost';"
+    sudo mysql -u root -e "FLUSH PRIVILEGES;"
+fi
 
 # Install PHP 8.2 and required extensions
 echo "Installing PHP 8.2 and required extensions..."
 sudo add-apt-repository ppa:ondrej/php -y
 sudo apt-get update -y
-sudo apt-get install php8.2 php8.2-fpm php8.2-mysql php8.2-xml php8.2-mbstring php8.2-zip php8.2-curl php8.2-bcmath php8.2-ldap php8.2-memcached -y
+sudo apt-get install -y php8.2 php8.2-fpm php8.2-mysql php8.2-xml php8.2-mbstring php8.2-zip php8.2-curl php8.2-bcmath php8.2-ldap php8.2-memcached
+log_install "php"
 
 # Install Composer globally
 echo "Installing Composer..."
 curl -sS https://getcomposer.org/installer | php
 sudo mv composer.phar /usr/local/bin/composer
-
-# Set up MySQL database
-echo "Setting up MySQL database..."
-DBNAME="laravel_db"
-DBUSER="laravel_user"
-DBPASS="secure_password"
-
-sudo mysql -u root -e "CREATE DATABASE ${DBNAME};"
-sudo mysql -u root -e "CREATE USER '${DBUSER}'@'localhost' IDENTIFIED BY '${DBPASS}';"
-sudo mysql -u root -e "GRANT ALL PRIVILEGES ON ${DBNAME}.* TO '${DBUSER}'@'localhost';"
-sudo mysql -u root -e "FLUSH PRIVILEGES;"
+log_install "composer"
 
 # Clone Laravel repository
 echo "Cloning Laravel repository..."
@@ -59,9 +112,14 @@ cd /var/www/laravel
 cp .env.example .env
 php artisan key:generate
 
-sed -i "s/DB_DATABASE=laravel/DB_DATABASE=${DBNAME}/" .env
-sed -i "s/DB_USERNAME=root/DB_USERNAME=${DBUSER}/" .env
-sed -i "s/DB_PASSWORD=/DB_PASSWORD=${DBPASS}/" .env
+# Set database details in .env if local MySQL is used
+if [[ "$INSTALL_MYSQL" == "yes" ]]; then
+    sed -i "s/DB_DATABASE=laravel/DB_DATABASE=${DBNAME}/" .env
+    sed -i "s/DB_USERNAME=root/DB_USERNAME=${DBUSER}/" .env
+    sed -i "s/DB_PASSWORD=/DB_PASSWORD=${DBPASS}/" .env
+else
+    echo "You opted for a remote MySQL instance. Please configure your .env file manually."
+fi
 
 # Install and configure Memcached
 echo "Installing and configuring Memcached..."
@@ -90,7 +148,7 @@ server {
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 
@@ -111,6 +169,7 @@ sudo systemctl restart nginx
 # Install Certbot and configure SSL
 echo "Installing Certbot for Let's Encrypt SSL..."
 sudo apt-get install certbot python3-certbot-nginx -y
+log_install "certbot"
 
 # Generate SSL certificate
 echo "Generating SSL certificate for ${DOMAIN}..."
