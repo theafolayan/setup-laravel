@@ -90,7 +90,7 @@ fi
 echo "Installing PHP 8.2 and required extensions..."
 sudo add-apt-repository ppa:ondrej/php -y
 sudo apt-get update -y
-sudo apt-get install -y php8.2 php8.2-fpm php8.2-mysql php8.2-xml php8.2-mbstring php8.2-zip php8.2-curl php8.2-bcmath php8.2-ldap php8.2-memcached
+sudo apt-get install -y php8.2 php8.2-fpm php8.2-mysql php8.2-xml php8.2-mbstring php8.2-zip php8.2-curl php8.2-bcmath php8.2-ldap php8.2-memcached php8.2-intl
 log_install "php"
 
 # Install Composer globally
