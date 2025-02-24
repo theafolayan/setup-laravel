@@ -137,33 +137,36 @@ sed -i "s/CACHE_DRIVER=file/CACHE_DRIVER=memcached/" .env
 # Configure Nginx for Laravel
 echo "Configuring Nginx for Laravel..."
 NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}"
-sudo bash -c "cat > ${NGINX_CONF} <<EOL
+
+# Using cat with a heredoc that has quoted end delimiter ('EOL') 
+# This prevents parameter expansion within the heredoc content
+sudo bash -c 'cat > '"$NGINX_CONF"' << \'EOL\'
 server {
     listen 80;
-    server_name ${DOMAIN} www.${DOMAIN};
+    server_name '"$DOMAIN"' www.'"$DOMAIN"';
     root /var/www/laravel/public;
 
     index index.php index.html index.htm;
 
     location / {
-        try_files \\$uri \\$uri/ /index.php?\\$query_string;
+        try_files $uri $uri/ /index.php?$query_string;
     }
 
-    location ~ \\.php\$ {
+    location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME \\$document_root\\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         include fastcgi_params;
     }
 
-    location ~ /\\.ht {
+    location ~ /\.ht {
         deny all;
     }
 
-    error_log /var/log/nginx/${DOMAIN}_error.log;
-    access_log /var/log/nginx/${DOMAIN}_access.log;
+    error_log /var/log/nginx/'"$DOMAIN"'_error.log;
+    access_log /var/log/nginx/'"$DOMAIN"'_access.log;
 }
-EOL"
+EOL'
 
 # Enable Nginx configuration and restart Nginx
 sudo ln -s ${NGINX_CONF} /etc/nginx/sites-enabled/
