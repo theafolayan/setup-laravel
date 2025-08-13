@@ -1,6 +1,12 @@
 #!/bin/bash
+set -euo pipefail
 
 LOG_FILE="/var/log/laravel_setup.log"
+
+if [[ $EUID -ne 0 ]]; then
+    echo "This script must be run as root."
+    exit 1
+fi
 
 # Log installed components
 log_install() {
@@ -11,34 +17,46 @@ log_install() {
 undo_install() {
     if [[ -f "$LOG_FILE" ]]; then
         echo "Undoing previous installation..."
-        while read -r pkg; do
+        while IFS= read -r pkg; do
             case "$pkg" in
                 nginx)
-                    sudo systemctl stop nginx
-                    sudo apt-get remove --purge -y nginx
-                    sudo rm -rf /etc/nginx/sites-available/* /etc/nginx/sites-enabled/*
+                    systemctl stop nginx || true
+                    apt-get remove --purge -y nginx
+                    rm -rf /etc/nginx/sites-available/* /etc/nginx/sites-enabled/*
                     ;;
                 mysql)
-                    sudo systemctl stop mysql
-                    sudo apt-get remove --purge -y mysql-server mysql-client mysql-common
-                    sudo rm -rf /var/lib/mysql
+                    systemctl stop mysql || true
+                    apt-get remove --purge -y mysql-server mysql-client mysql-common
+                    rm -rf /var/lib/mysql
                     ;;
                 postgresql)
-                    sudo systemctl stop postgresql
-                    sudo apt-get remove --purge -y postgresql postgresql-contrib
+                    systemctl stop postgresql || true
+                    apt-get remove --purge -y postgresql postgresql-contrib
                     ;;
                 php)
-                    sudo apt-get remove --purge -y php*
+                    apt-get remove --purge -y php*
                     ;;
                 composer)
-                    sudo rm -f /usr/local/bin/composer
+                    rm -f /usr/local/bin/composer
                     ;;
                 certbot)
-                    sudo apt-get remove --purge -y certbot python3-certbot-nginx
+                    apt-get remove --purge -y certbot python3-certbot-nginx
                     ;;
                 memcached)
-                    sudo systemctl stop memcached
-                    sudo apt-get remove --purge -y memcached
+                    systemctl stop memcached || true
+                    apt-get remove --purge -y memcached
+                    ;;
+                app_path:*)
+                    path=${pkg#app_path:}
+                    rm -rf "$path"
+                    ;;
+                nginx_conf:*)
+                    conf=${pkg#nginx_conf:}
+                    rm -f "$conf" "/etc/nginx/sites-enabled/$(basename "$conf")"
+                    ;;
+                ssl_domain:*)
+                    domain=${pkg#ssl_domain:}
+                    rm -rf "/etc/letsencrypt/live/$domain" "/etc/letsencrypt/archive/$domain" "/etc/letsencrypt/renewal/$domain.conf"
                     ;;
             esac
         done < "$LOG_FILE"
@@ -56,25 +74,57 @@ if [[ -f "$LOG_FILE" ]]; then
 fi
 
 # ===== User Prompts =====
-echo "Enter your app name (will create /var/www/<app_name>):"
-read -r APP_NAME
+read -rp "Enter your app name (will create /var/www/<app_name>) [laravel_app]: " APP_NAME
+APP_NAME=${APP_NAME:-laravel_app}
 
-echo "Enter your domain (e.g. example.com):"
-read -r DOMAIN
+read -rp "Enter your domain (e.g. example.com) [example.com]: " DOMAIN
+DOMAIN=${DOMAIN:-example.com}
 
-echo "Enter your Laravel repo URL:"
-read -r REPO_URL
+# Show server IP and confirm DNS records
+SERVER_IP=$(curl -4 -s ifconfig.co || hostname -I | awk '{print $1}')
+echo "Please point A records for ${DOMAIN} and www.${DOMAIN} to ${SERVER_IP}."
+read -rp "Have you updated the DNS records? (yes/no) [yes]: " DNS_CONFIRM
+DNS_CONFIRM=${DNS_CONFIRM:-yes}
+while [[ "$DNS_CONFIRM" != "yes" ]]; do
+    echo "Update the DNS records for ${DOMAIN} and www.${DOMAIN} to ${SERVER_IP} before continuing."
+    read -rp "Have you updated the DNS records? (yes/no) [yes]: " DNS_CONFIRM
+    DNS_CONFIRM=${DNS_CONFIRM:-yes}
+done
 
-echo "Choose local database to install (mysql/postgresql/none):"
-read -r DB_CHOICE
+read -rp "Enter your Laravel repo URL [https://github.com/laravel/laravel.git]: " REPO_URL
+REPO_URL=${REPO_URL:-https://github.com/laravel/laravel.git}
+
+while true; do
+    read -rp "Choose local database to install (mysql/postgresql/none) [mysql]: " DB_CHOICE
+    DB_CHOICE=${DB_CHOICE:-mysql}
+    case "$DB_CHOICE" in
+        mysql|postgresql|none) break ;;
+        *) echo "Invalid choice. Please enter mysql, postgresql, or none." ;;
+    esac
+done
+
+if [[ "$DB_CHOICE" == "mysql" || "$DB_CHOICE" == "postgresql" ]]; then
+    read -rp "Database name [laravel_db]: " DBNAME
+    DBNAME=${DBNAME:-laravel_db}
+    read -rp "Database username [laravel_user]: " DBUSER
+    DBUSER=${DBUSER:-laravel_user}
+    default_pass=$(openssl rand -base64 16)
+    read -rp "Database password [generated]: " DBPASS_INPUT
+    DBPASS=${DBPASS_INPUT:-$default_pass}
+fi
 
 # ===== System Update =====
-echo "Updating system..."
-sudo apt-get update -y && sudo apt-get upgrade -y
+echo "Updating package lists..."
+apt-get update -y
+read -rp "Run full system upgrade? (yes/no) [no]: " RUN_UPGRADE
+RUN_UPGRADE=${RUN_UPGRADE:-no}
+if [[ "$RUN_UPGRADE" == "yes" ]]; then
+    apt-get upgrade -y
+fi
 
 # ===== Nginx =====
 echo "Installing Nginx..."
-sudo apt-get install nginx -y
+apt-get install nginx -y
 log_install "nginx"
 
 # ===== Database Installation & Setup =====
@@ -82,37 +132,42 @@ DB_DRIVER=""
 DB_PORT=""
 if [[ "$DB_CHOICE" == "mysql" ]]; then
     echo "Installing MySQL..."
-    sudo apt-get install mysql-server -y
-    sudo mysql_secure_installation
+    apt-get install mysql-server -y
     log_install "mysql"
 
     DB_DRIVER="mysql"
     DB_PORT="3306"
-    DBNAME="laravel_db"
-    DBUSER="laravel_user"
-    DBPASS="secure_password"
+    MYSQL_ROOT_PASS=$(openssl rand -base64 16)
+
+    mysql --user=root <<SQL
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}';
+DELETE FROM mysql.user WHERE User='';
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
+SQL
 
     echo "Creating MySQL database and user..."
-    sudo mysql -u root -e "CREATE DATABASE ${DBNAME};"
-    sudo mysql -u root -e "CREATE USER '${DBUSER}'@'localhost' IDENTIFIED BY '${DBPASS}';"
-    sudo mysql -u root -e "GRANT ALL PRIVILEGES ON ${DBNAME}.* TO '${DBUSER}'@'localhost';"
-    sudo mysql -u root -e "FLUSH PRIVILEGES;"
+    mysql -uroot -p"${MYSQL_ROOT_PASS}" -e "CREATE DATABASE ${DBNAME};"
+    mysql -uroot -p"${MYSQL_ROOT_PASS}" -e "CREATE USER '${DBUSER}'@'localhost' IDENTIFIED BY '${DBPASS}';"
+    mysql -uroot -p"${MYSQL_ROOT_PASS}" -e "GRANT ALL PRIVILEGES ON ${DBNAME}.* TO '${DBUSER}'@'localhost';"
+    mysql -uroot -p"${MYSQL_ROOT_PASS}" -e "FLUSH PRIVILEGES;"
+    echo "MySQL root password: ${MYSQL_ROOT_PASS}"
+    echo "Database ${DBNAME} and user ${DBUSER} created with password ${DBPASS}"
 
 elif [[ "$DB_CHOICE" == "postgresql" ]]; then
     echo "Installing PostgreSQL..."
-    sudo apt-get install postgresql postgresql-contrib -y
+    apt-get install postgresql postgresql-contrib -y
     log_install "postgresql"
 
     DB_DRIVER="pgsql"
     DB_PORT="5432"
-    DBNAME="laravel_db"
-    DBUSER="laravel_user"
-    DBPASS="secure_password"
 
     echo "Creating PostgreSQL database and user..."
-    sudo -u postgres psql -c "CREATE DATABASE ${DBNAME};"
-    sudo -u postgres psql -c "CREATE USER ${DBUSER} WITH PASSWORD '${DBPASS}';"
-    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DBNAME} TO ${DBUSER};"
+    runuser -u postgres -- psql -c "CREATE DATABASE ${DBNAME};"
+    runuser -u postgres -- psql -c "CREATE USER ${DBUSER} WITH PASSWORD '${DBPASS}';"
+    runuser -u postgres -- psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DBNAME} TO ${DBUSER};"
+    echo "Database ${DBNAME} and user ${DBUSER} created with password ${DBPASS}"
 
 else
     echo "No local database will be installed. You must configure your remote DB manually."
@@ -120,8 +175,8 @@ fi
 
 # ===== PHP Version Prompt & Validation =====
 echo "Adding PHP PPA and fetching available versions..."
-sudo add-apt-repository ppa:ondrej/php -y
-sudo apt-get update -y
+add-apt-repository ppa:ondrej/php -y
+apt-get update -y
 
 AVAILABLE_VERSIONS=$(apt-cache pkgnames \
     | grep -E '^php[0-9]\.[0-9]+$' \
@@ -147,20 +202,35 @@ fi
 
 # ===== Install PHP & Extensions =====
 echo "Installing PHP $PHP_VERSION and extensions..."
-sudo apt-get install -y \
-    php${PHP_VERSION} \
-    php${PHP_VERSION}-fpm \
-    $PHP_DB_EXT \
-    php${PHP_VERSION}-gd \
-    php${PHP_VERSION}-xml \
-    php${PHP_VERSION}-mbstring \
-    php${PHP_VERSION}-zip \
-    php${PHP_VERSION}-curl \
-    php${PHP_VERSION}-bcmath \
-    php${PHP_VERSION}-ldap \
-    php${PHP_VERSION}-memcached \
-    php${PHP_VERSION}-intl
+apt-get install -y \
+    "php${PHP_VERSION}" \
+    "php${PHP_VERSION}-fpm" \
+    "php${PHP_VERSION}-opcache" \
+    "$PHP_DB_EXT" \
+    "php${PHP_VERSION}-gd" \
+    "php${PHP_VERSION}-xml" \
+    "php${PHP_VERSION}-mbstring" \
+    "php${PHP_VERSION}-zip" \
+    "php${PHP_VERSION}-curl" \
+    "php${PHP_VERSION}-bcmath" \
+    "php${PHP_VERSION}-ldap" \
+    "php${PHP_VERSION}-memcached" \
+    "php${PHP_VERSION}-intl"
 log_install "php"
+
+# ===== Configure PHP OPcache =====
+echo "Applying recommended OPcache settings..."
+OPCACHE_INI="/etc/php/${PHP_VERSION}/fpm/conf.d/99-opcache-recommended.ini"
+tee "$OPCACHE_INI" > /dev/null <<'EOF'
+opcache.enable=1
+opcache.enable_cli=1
+opcache.memory_consumption=128
+opcache.interned_strings_buffer=8
+opcache.max_accelerated_files=10000
+opcache.revalidate_freq=2
+opcache.validate_timestamps=1
+EOF
+
 
 # ===== Detect PHP-FPM Service =====
 FPM_SERVICE="php${PHP_VERSION}-fpm"
@@ -182,22 +252,24 @@ echo "Using PHP-FPM service: $FPM_SERVICE"
 # ===== Composer =====
 echo "Installing Composer..."
 curl -sS https://getcomposer.org/installer | php
-sudo mv composer.phar /usr/local/bin/composer
+mv composer.phar /usr/local/bin/composer
 log_install "composer"
 
 # ===== Clone & Prepare Laravel =====
 echo "Cloning Laravel into /var/www/$APP_NAME..."
-sudo mkdir -p /var/www/$APP_NAME
-sudo chown "$USER":"$USER" /var/www/$APP_NAME
+mkdir -p "/var/www/$APP_NAME"
 git clone "$REPO_URL" "/var/www/$APP_NAME"
 
-echo "Setting permissions..."
-sudo chown -R www-data:www-data "/var/www/$APP_NAME"
-sudo chmod -R 755 "/var/www/$APP_NAME"
-
 cd "/var/www/$APP_NAME"
+composer install --no-interaction --prefer-dist
 cp .env.example .env
 php artisan key:generate
+
+find . -type f -exec chmod 644 {} \;
+find . -type d -exec chmod 755 {} \;
+chmod -R ug+rwx storage bootstrap/cache
+chown -R www-data:www-data "/var/www/$APP_NAME"
+log_install "app_path:/var/www/$APP_NAME"
 
 # ===== Configure .env =====
 if [[ -n "$DB_DRIVER" ]]; then
@@ -211,16 +283,22 @@ else
 fi
 
 # ===== Memcached =====
-echo "Installing Memcached..."
-sudo apt-get install memcached -y
-sudo systemctl enable --now memcached
-log_install "memcached"
-sed -i "s/^CACHE_DRIVER=.*/CACHE_DRIVER=memcached/" .env
+read -rp "Install Memcached for caching? (yes/no) [no]: " INSTALL_MEMCACHED
+INSTALL_MEMCACHED=${INSTALL_MEMCACHED:-no}
+if [[ "$INSTALL_MEMCACHED" == "yes" ]]; then
+    echo "Installing Memcached..."
+    apt-get install memcached -y
+    systemctl enable --now memcached
+    log_install "memcached"
+    sed -i "s/^CACHE_DRIVER=.*/CACHE_DRIVER=memcached/" .env
+else
+    echo "Skipping Memcached installation."
+fi
 
 # ===== Nginx Virtual Host =====
 echo "Configuring Nginx..."
 NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}"
-sudo tee "$NGINX_CONF" > /dev/null <<EOF
+tee "$NGINX_CONF" > /dev/null <<EOF
 server {
     listen 80;
     server_name ${DOMAIN} www.${DOMAIN};
@@ -244,20 +322,25 @@ server {
 }
 EOF
 
-sudo ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl restart nginx
+ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
+if [[ -e /etc/nginx/sites-enabled/default ]]; then
+    rm /etc/nginx/sites-enabled/default
+fi
+nginx -t && systemctl restart nginx
+log_install "nginx_conf:${NGINX_CONF}"
 
 # ===== SSL via Certbot =====
 echo "Installing Certbot..."
-sudo apt-get install certbot python3-certbot-nginx -y
+apt-get install certbot python3-certbot-nginx -y
 log_install "certbot"
-sudo certbot --nginx \
+certbot --nginx \
     -d "${DOMAIN}" -d "www.${DOMAIN}" \
     --non-interactive --agree-tos -m "admin@${DOMAIN}"
-sudo systemctl enable --now certbot.timer
+systemctl enable --now certbot.timer
+log_install "ssl_domain:${DOMAIN}"
 
 # ===== Restart PHP-FPM =====
 echo "Restarting $FPM_SERVICE..."
-sudo systemctl restart "$FPM_SERVICE"
+systemctl restart "$FPM_SERVICE"
 
 echo "✅ Deployment complete! /var/www/$APP_NAME running on PHP $PHP_VERSION with GD support."
