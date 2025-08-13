@@ -1,6 +1,6 @@
 # Laravel Deployment Automation Script
 
-This repository contains a bash script to automate the deployment of a Laravel application with Nginx, PHP 8.2, MySQL, Memcached, and SSL on an Ubuntu (Or Similar arch) server.
+This repository contains a bash script to automate the deployment of a Laravel application with Nginx, PHP, a selectable database (MySQL or PostgreSQL), optional Memcached, recommended PHP OPcache settings, and SSL on an Ubuntu (or similar) server.
 
 ## Prerequisites
 
@@ -11,10 +11,12 @@ Before running this script, ensure that:
 
 ## Features
 
-- Installs Nginx, PHP 8.2, MySQL, Memcached, and Composer.
-- Clones a Laravel project from a specified GitHub repository.
-- Automatically configures Nginx to serve the Laravel app using your provided domain.
-- Configures SSL using Let's Encrypt with Certbot.
+- Installs Nginx, PHP (version selectable) with recommended OPcache configuration, MySQL or PostgreSQL, optional Memcached, and Composer.
+- Prompts for app name, domain, repository URL, database credentials, and whether to run a full system upgrade.
+- After the domain is entered, displays the server IP and waits for confirmation that DNS A records for the domain and www subdomain point to it.
+- Generates secure random database passwords and secures MySQL without interactive prompts.
+- Clones a Laravel project from a specified GitHub repository and prepares environment variables.
+- Automatically configures Nginx and disables the default site, then enables SSL using Let's Encrypt with Certbot.
 - Optionally pushes local changes back to the GitHub repository. (Coming Soon)
 
 ## How to Use
@@ -39,10 +41,13 @@ Run the script with superuser privileges to start the installation process:
 ```bash
 sudo ./setup_laravel_nginx_ssl.sh
 ```
-The script will prompt you for the following information:
+The script will prompt you for:
 
-- Domain name: Provide the domain name you want to use for your Laravel app (e.g., example.com).
-- GitHub repository URL: Provide the URL of the Laravel project repository (e.g., https://github.com/username/laravel-app.git).
+- Application name and domain.
+- Confirmation that DNS A records for the domain and www subdomain point to the server IP.
+- Laravel repository URL.
+- Which database to install (MySQL, PostgreSQL, or none) and the database name, username, and password.
+- Whether to run a full system upgrade and whether to install Memcached for caching.
 
 ## Step 4: SSL Setup
 The script will automatically configure SSL using Let's Encrypt for the provided domain.
