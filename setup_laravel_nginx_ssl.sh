@@ -261,7 +261,7 @@ mkdir -p "/var/www/$APP_NAME"
 git clone "$REPO_URL" "/var/www/$APP_NAME"
 
 cd "/var/www/$APP_NAME"
-composer install --no-interaction --prefer-dist
+composer install --no-interaction --prefer-dist --no-dev --optimize-autoloader
 cp .env.example .env
 php artisan key:generate
 
@@ -295,6 +295,12 @@ else
     echo "Skipping Memcached installation."
 fi
 
+# ===== Laravel Caching =====
+echo "Caching Laravel config, routes and views..."
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+
 # ===== Nginx Virtual Host =====
 echo "Configuring Nginx..."
 NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}"
@@ -305,8 +311,17 @@ server {
     root /var/www/${APP_NAME}/public;
     index index.php index.html;
 
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+    gzip_min_length 1024;
+
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~* \.(?:css|js|jpg|jpeg|gif|png|svg|ico)\$ {
+        expires 7d;
+        add_header Cache-Control "public";
     }
 
     location ~ \.php\$ {

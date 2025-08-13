@@ -15,8 +15,8 @@ Before running this script, ensure that:
 - Prompts for app name, domain, repository URL, database credentials, and whether to run a full system upgrade.
 - After the domain is entered, displays the server IP and waits for confirmation that DNS A records for the domain and www subdomain point to it.
 - Generates secure random database passwords and secures MySQL without interactive prompts.
-- Clones a Laravel project from a specified GitHub repository and prepares environment variables.
-- Automatically configures Nginx and disables the default site, then enables SSL using Let's Encrypt with Certbot.
+- Clones a Laravel project from a specified GitHub repository, installs dependencies with `--no-dev --optimize-autoloader`, and caches configuration, routes, and views for better performance.
+- Automatically configures Nginx with gzip and static asset caching, disables the default site, then enables SSL using Let's Encrypt with Certbot.
 - Optionally pushes local changes back to the GitHub repository. (Coming Soon)
 
 ## How to Use
