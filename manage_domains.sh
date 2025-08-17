@@ -24,14 +24,21 @@ select APP_NAME in "${APPS[@]}"; do
     echo "Invalid selection."
 done
 
-read -rp "Enter the primary domain configured for $APP_NAME: " PRIMARY_DOMAIN
-NGINX_CONF="/etc/nginx/sites-available/${PRIMARY_DOMAIN}"
-if [[ ! -f "$NGINX_CONF" ]]; then
-    echo "Nginx config $NGINX_CONF not found."
+# Detect the primary domain from the Nginx configuration
+PRIMARY_CONF=$(grep -Rls "root /var/www/${APP_NAME}/public;" /etc/nginx/sites-available | head -n1 || true)
+if [[ -z "$PRIMARY_CONF" ]]; then
+    echo "Could not detect primary domain for $APP_NAME"
     exit 1
 fi
+NGINX_CONF="$PRIMARY_CONF"
+PRIMARY_DOMAIN=$(basename "$NGINX_CONF")
 
-read -rp "Enter additional domain(s) to add (space-separated): " NEW_DOMAINS
+read -rp "${PRIMARY_DOMAIN} is already configured for this installation, add extra domains? " NEW_DOMAINS
+
+if [[ -z "$NEW_DOMAINS" ]]; then
+    echo "No additional domains provided."
+    exit 0
+fi
 
 DOMAIN_ARGS=("$PRIMARY_DOMAIN" "www.$PRIMARY_DOMAIN")
 NEW_ENTRIES=""
@@ -58,6 +65,6 @@ CERTBOT_ARGS=()
 for d in "${DOMAIN_ARGS[@]}"; do
     CERTBOT_ARGS+=(-d "$d")
 done
-certbot --nginx --non-interactive --agree-tos -m "admin@${PRIMARY_DOMAIN}" "${CERTBOT_ARGS[@]}"
+certbot --nginx --non-interactive --agree-tos --expand -m "admin@${PRIMARY_DOMAIN}" "${CERTBOT_ARGS[@]}"
 
 echo "Added domains: $NEW_DOMAINS to $PRIMARY_DOMAIN"
