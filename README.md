@@ -53,3 +53,23 @@ The script will prompt you for:
 The script will automatically configure SSL using Let's Encrypt for the provided domain.
 
 Ensure that your domain DNS is correctly set up to point to the server's IP address. Certbot will handle the SSL setup and configure Nginx to use the certificates.
+
+## Adding Additional Domains
+
+If you need to point extra domains to an existing application, use the `manage_domains.sh` script included in this repository.
+
+### Step 1: Copy the Script
+
+```bash
+wget https://raw.githubusercontent.com/theafolayan/setup-laravel/main/manage_domains.sh
+chmod +x manage_domains.sh
+```
+
+### Step 2: Run the Script
+
+```bash
+sudo ./manage_domains.sh
+```
+
+The script lists applications found in `/var/www` and lets you choose which one to update. After selecting an app, provide the primary domain and any additional domains you want to add. The script updates the Nginx configuration and obtains SSL certificates for the new domains using Certbot.
+Make sure DNS A records for the new domain(s) point to your server before running the script. You'll be prompted to type `yes` to confirm the records are in place before the script requests SSL certificates.
