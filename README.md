@@ -71,5 +71,5 @@ chmod +x manage_domains.sh
 sudo ./manage_domains.sh
 ```
 
-The script lists applications found in `/var/www` and lets you choose which one to update. After selecting an app, provide the primary domain and any additional domains you want to add. The script updates the Nginx configuration and obtains SSL certificates for the new domains using Certbot.
+The script lists applications found in `/var/www` and lets you choose which one to update. It auto-detects the primary domain and shows any other domains already configured. When prompted, enter additional domain(s) to add. The script updates the Nginx configuration and obtains SSL certificates for the new domains using Certbot.
 Make sure DNS A records for the new domain(s) point to your server before running the script. You'll be prompted to type `yes` to confirm the records are in place before the script requests SSL certificates.
