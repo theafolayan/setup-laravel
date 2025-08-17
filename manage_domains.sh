@@ -24,18 +24,39 @@ select APP_NAME in "${APPS[@]}"; do
     echo "Invalid selection."
 done
 
-read -rp "Enter the primary domain configured for $APP_NAME: " PRIMARY_DOMAIN
-NGINX_CONF="/etc/nginx/sites-available/${PRIMARY_DOMAIN}"
-if [[ ! -f "$NGINX_CONF" ]]; then
-    echo "Nginx config $NGINX_CONF not found."
+# Detect the primary domain from the Nginx configuration
+PRIMARY_CONF=$(grep -Rls "root /var/www/${APP_NAME}/public;" /etc/nginx/sites-available | head -n1 || true)
+if [[ -z "$PRIMARY_CONF" ]]; then
+    echo "Could not detect primary domain for $APP_NAME"
     exit 1
 fi
+NGINX_CONF="$PRIMARY_CONF"
+PRIMARY_DOMAIN=$(basename "$NGINX_CONF")
 
-read -rp "Enter additional domain(s) to add (space-separated): " NEW_DOMAINS
+# Extract existing domains from server_name (exclude primary and www)
+SERVER_NAMES=$(grep -E "^\s*server_name" "$NGINX_CONF" | sed -E 's/^\s*server_name\s+([^;]+);/\1/')
+EXISTING_DOMAINS=()
+for name in $SERVER_NAMES; do
+    base=${name#www.}
+    if [[ "$base" != "$PRIMARY_DOMAIN" && " ${EXISTING_DOMAINS[*]} " != *" $base "* ]]; then
+        EXISTING_DOMAINS+=("$base")
+    fi
+done
+
+if [[ ${#EXISTING_DOMAINS[@]} -gt 0 ]]; then
+    echo "Other domains already configured: ${EXISTING_DOMAINS[*]}"
+fi
+
+read -rp "${PRIMARY_DOMAIN} is already configured for this installation, add extra domains? " -a NEW_DOMAIN_ARR
+
+if [[ ${#NEW_DOMAIN_ARR[@]} -eq 0 ]]; then
+    echo "No additional domains provided."
+    exit 0
+fi
 
 DOMAIN_ARGS=("$PRIMARY_DOMAIN" "www.$PRIMARY_DOMAIN")
 NEW_ENTRIES=""
-for d in $NEW_DOMAINS; do
+for d in "${NEW_DOMAIN_ARR[@]}"; do
     DOMAIN_ARGS+=("$d" "www.$d")
     NEW_ENTRIES+=" $d www.$d"
 done
@@ -46,7 +67,7 @@ sed -i "/server_name/s/;/${NEW_ENTRIES};/" "$NGINX_CONF"
 nginx -t && systemctl reload nginx
 
 # Confirm DNS has been updated before requesting certificates
-echo "Ensure the following domains point to this server: $NEW_DOMAINS"
+echo "Ensure the following domains point to this server: ${NEW_DOMAIN_ARR[*]}"
 read -rp "Type 'yes' once DNS records have propagated: " CONFIRM
 if [[ $CONFIRM != "yes" ]]; then
     echo "Aborting SSL certificate request."
@@ -58,6 +79,7 @@ CERTBOT_ARGS=()
 for d in "${DOMAIN_ARGS[@]}"; do
     CERTBOT_ARGS+=(-d "$d")
 done
-certbot --nginx --non-interactive --agree-tos -m "admin@${PRIMARY_DOMAIN}" "${CERTBOT_ARGS[@]}"
+certbot --nginx --non-interactive --agree-tos --expand -m "admin@${PRIMARY_DOMAIN}" "${CERTBOT_ARGS[@]}"
 
-echo "Added domains: $NEW_DOMAINS to $PRIMARY_DOMAIN"
+ALL_DOMAINS=("$PRIMARY_DOMAIN" "${EXISTING_DOMAINS[@]}" "${NEW_DOMAIN_ARR[@]}")
+echo "Installation domains: ${ALL_DOMAINS[*]}"
