@@ -55,6 +55,9 @@ if [[ ${#NEW_DOMAIN_ARR[@]} -eq 0 ]]; then
 fi
 
 DOMAIN_ARGS=("$PRIMARY_DOMAIN" "www.$PRIMARY_DOMAIN")
+for d in "${EXISTING_DOMAINS[@]}"; do
+    DOMAIN_ARGS+=("$d" "www.$d")
+done
 NEW_ENTRIES=""
 for d in "${NEW_DOMAIN_ARR[@]}"; do
     DOMAIN_ARGS+=("$d" "www.$d")
