@@ -2,6 +2,65 @@
 set -euo pipefail
 
 LOG_FILE="/var/log/laravel_setup.log"
+NON_INTERACTIVE=0
+DRY_RUN=0
+
+usage() {
+    cat <<'EOF'
+Usage: setup_laravel_nginx_ssl.sh [options]
+  -a, --app-name NAME         Application name
+  -d, --domain DOMAIN         Domain name
+      --dns-confirm yes|no    Confirm DNS setup
+      --repo-url URL          Laravel repository URL
+      --db-choice CHOICE      mysql|postgresql|none
+      --db-name NAME          Database name
+      --db-user USER          Database user
+      --db-pass PASS          Database password
+      --php-version VERSION   PHP version (default 8.4)
+  -n, --non-interactive       Do not prompt for input
+      --dry-run               Show commands without executing
+  -h, --help                  Show this message
+EOF
+}
+
+log() {
+    echo "[$(date +'%T')] $1"
+}
+
+prompt_if_unset() {
+    local var="$1" prompt="$2" default="$3"
+    declare -n ref=$var
+    if [[ -z ${ref:-} && $NON_INTERACTIVE -eq 0 ]]; then
+        read -rp "$prompt [$default]: " ref
+    fi
+    ref=${ref:-$default}
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a|--app-name) APP_NAME="$2"; shift 2;;
+        -d|--domain) DOMAIN="$2"; shift 2;;
+        --dns-confirm) DNS_CONFIRM="$2"; shift 2;;
+        --repo-url) REPO_URL="$2"; shift 2;;
+        --db-choice) DB_CHOICE="$2"; shift 2;;
+        --db-name) DBNAME="$2"; shift 2;;
+        --db-user) DBUSER="$2"; shift 2;;
+        --db-pass) DBPASS="$2"; shift 2;;
+        --php-version) PHP_VERSION="$2"; shift 2;;
+        -n|--non-interactive) NON_INTERACTIVE=1; shift;;
+        --dry-run) DRY_RUN=1; shift;;
+        -h|--help) usage; exit 0;;
+        *) echo "Unknown option: $1"; usage; exit 1;;
+    esac
+done
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    shopt -s expand_aliases
+    for cmd in apt-get systemctl git composer curl mv cp sed ln rm nginx certbot php add-apt-repository tee mysql psql sudo openssl; do
+        # shellcheck disable=SC2139
+        alias "$cmd"="echo DRY-RUN: $cmd"
+    done
+fi
 
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root."
@@ -68,62 +127,59 @@ undo_install() {
 
 # Offer to undo if log exists
 if [[ -f "$LOG_FILE" ]]; then
-    echo "A previous installation was detected. Undo it before continuing? (yes/no)"
-    read -r UNDO
-    [[ "$UNDO" == "yes" ]] && undo_install
+    if [[ $NON_INTERACTIVE -eq 1 ]]; then
+        log "Previous installation detected; remove $LOG_FILE to start fresh."
+    else
+        echo "A previous installation was detected. Undo it before continuing? (yes/no)"
+        read -r UNDO
+        [[ "$UNDO" == "yes" ]] && undo_install
+    fi
 fi
 
 # ===== User Prompts =====
-read -rp "Enter your app name (will create /var/www/<app_name>) [laravel_app]: " APP_NAME
-APP_NAME=${APP_NAME:-laravel_app}
-
-read -rp "Enter your domain (e.g. example.com) [example.com]: " DOMAIN
-DOMAIN=${DOMAIN:-example.com}
+prompt_if_unset APP_NAME "Enter your app name (will create /var/www/<app_name>)" "laravel_app"
+prompt_if_unset DOMAIN "Enter your domain (e.g. example.com)" "example.com"
 
 # Show server IP and confirm DNS records
 SERVER_IP=$(curl -4 -s ifconfig.co || hostname -I | awk '{print $1}')
-echo "Please point A records for ${DOMAIN} and www.${DOMAIN} to ${SERVER_IP}."
-read -rp "Have you updated the DNS records? (yes/no) [yes]: " DNS_CONFIRM
-DNS_CONFIRM=${DNS_CONFIRM:-yes}
-while [[ "$DNS_CONFIRM" != "yes" ]]; do
-    echo "Update the DNS records for ${DOMAIN} and www.${DOMAIN} to ${SERVER_IP} before continuing."
-    read -rp "Have you updated the DNS records? (yes/no) [yes]: " DNS_CONFIRM
-    DNS_CONFIRM=${DNS_CONFIRM:-yes}
-done
+log "Please point A records for ${DOMAIN} and www.${DOMAIN} to ${SERVER_IP}."
+prompt_if_unset DNS_CONFIRM "Have you updated the DNS records? (yes/no)" "yes"
+if [[ "$DNS_CONFIRM" != "yes" ]]; then
+    log "DNS records not confirmed. Aborting."
+    exit 1
+fi
 
-read -rp "Enter your Laravel repo URL [https://github.com/laravel/laravel.git]: " REPO_URL
-REPO_URL=${REPO_URL:-https://github.com/laravel/laravel.git}
+prompt_if_unset REPO_URL "Enter your Laravel repo URL" "https://github.com/laravel/laravel.git"
 
 while true; do
-    read -rp "Choose local database to install (mysql/postgresql/none) [mysql]: " DB_CHOICE
-    DB_CHOICE=${DB_CHOICE:-mysql}
+    prompt_if_unset DB_CHOICE "Choose local database to install (mysql/postgresql/none)" "mysql"
     case "$DB_CHOICE" in
         mysql|postgresql|none) break ;;
-        *) echo "Invalid choice. Please enter mysql, postgresql, or none." ;;
+        *) if [[ $NON_INTERACTIVE -eq 1 ]]; then
+               log "Invalid DB choice: $DB_CHOICE"; exit 1
+           else
+               echo "Invalid choice. Please enter mysql, postgresql, or none."
+           fi ;;
     esac
 done
 
 if [[ "$DB_CHOICE" == "mysql" || "$DB_CHOICE" == "postgresql" ]]; then
-    read -rp "Database name [laravel_db]: " DBNAME
-    DBNAME=${DBNAME:-laravel_db}
-    read -rp "Database username [laravel_user]: " DBUSER
-    DBUSER=${DBUSER:-laravel_user}
+    prompt_if_unset DBNAME "Database name" "laravel_db"
+    prompt_if_unset DBUSER "Database username" "laravel_user"
     default_pass=$(openssl rand -base64 16)
-    read -rp "Database password [generated]: " DBPASS_INPUT
-    DBPASS=${DBPASS_INPUT:-$default_pass}
+    prompt_if_unset DBPASS "Database password" "$default_pass"
 fi
 
 # ===== System Update =====
-echo "Updating package lists..."
+log "Updating package lists..."
 apt-get update -y
-read -rp "Run full system upgrade? (yes/no) [no]: " RUN_UPGRADE
-RUN_UPGRADE=${RUN_UPGRADE:-no}
+prompt_if_unset RUN_UPGRADE "Run full system upgrade? (yes/no)" "no"
 if [[ "$RUN_UPGRADE" == "yes" ]]; then
     apt-get upgrade -y
 fi
 
 # ===== Nginx =====
-echo "Installing Nginx..."
+log "Installing Nginx..."
 apt-get install nginx -y
 log_install "nginx"
 
@@ -174,7 +230,7 @@ else
 fi
 
 # ===== PHP Version Prompt & Validation =====
-echo "Adding PHP PPA and fetching available versions..."
+log "Adding PHP PPA and fetching available versions..."
 add-apt-repository ppa:ondrej/php -y
 apt-get update -y
 
@@ -183,14 +239,11 @@ AVAILABLE_VERSIONS=$(apt-cache pkgnames \
     | sed 's/php//' \
     | sort -u)
 
-echo "Available PHP versions: $AVAILABLE_VERSIONS"
-echo "Which PHP version should we install? (e.g. 7.4, 8.0, 8.1, 8.2)"
-read -r PHP_VERSION
-
-while ! echo "$AVAILABLE_VERSIONS" | grep -qx "$PHP_VERSION"; do
-    echo "PHP $PHP_VERSION not found. Please choose from: $AVAILABLE_VERSIONS"
-    read -r PHP_VERSION
-done
+prompt_if_unset PHP_VERSION "Which PHP version should we install? ($AVAILABLE_VERSIONS)" "8.4"
+if ! echo "$AVAILABLE_VERSIONS" | grep -qx "$PHP_VERSION"; then
+    log "PHP $PHP_VERSION not found. Available: $AVAILABLE_VERSIONS"
+    exit 1
+fi
 
 # Decide which PHP DB extension to add
 PHP_DB_EXT=""
@@ -283,16 +336,15 @@ else
 fi
 
 # ===== Memcached =====
-read -rp "Install Memcached for caching? (yes/no) [no]: " INSTALL_MEMCACHED
-INSTALL_MEMCACHED=${INSTALL_MEMCACHED:-no}
+prompt_if_unset INSTALL_MEMCACHED "Install Memcached for caching? (yes/no)" "no"
 if [[ "$INSTALL_MEMCACHED" == "yes" ]]; then
-    echo "Installing Memcached..."
+    log "Installing Memcached..."
     apt-get install memcached -y
     systemctl enable --now memcached
     log_install "memcached"
     sed -i "s/^CACHE_DRIVER=.*/CACHE_DRIVER=memcached/" .env
 else
-    echo "Skipping Memcached installation."
+    log "Skipping Memcached installation."
 fi
 
 # ===== Laravel Caching =====
