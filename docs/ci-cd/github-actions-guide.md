@@ -38,6 +38,37 @@ This guide outlines how to automate testing and deployments whenever code is pus
 - **Deployment script**: Edit the SSH script to point to your project path, queue manager, and any extra build steps (e.g., `npm ci && npm run build`).
 - **Secrets**: If you use additional secrets (e.g., `DEPLOY_PATH`, `SUPERVISOR_NAME`), add them under the `with:` block of the deploy step.
 
+## Deploying to AWS Lightsail
+You can reuse the template to deploy to an AWS Lightsail instance because Lightsail exposes standard SSH access.
+
+1. **Set up the Lightsail server**
+   - Create a Linux/Unix instance and attach a static IP.
+   - Open ports for HTTP/HTTPS (80/443) and SSH (22 by default) in the networking tab.
+   - Install system dependencies on the instance: PHP extensions required by your app, Composer, Git, Nginx/Apache, Supervisor, and Node tooling if you build frontend assets.
+   - Create a non-root deploy user (for example `deploy`) with sudo access for service restarts.
+
+2. **Provision the application**
+   - Clone your repository to a path such as `/home/deploy/www/staging` and configure the virtual host to serve from `public/`.
+   - Create `.env` with production/staging values and ensure `storage/` and `bootstrap/cache/` are writable by the web server and deploy user.
+   - Set up Supervisor (or systemd) to run queues/schedulers if needed and note the service name you want to restart after deploys.
+
+3. **Configure GitHub secrets**
+   - `SSH_HOST`: Lightsail public IP or DNS.
+   - `SSH_PORT`: Usually `22` unless you customized it.
+   - `SSH_USERNAME`: The deploy user (e.g., `deploy`).
+   - `SSH_KEY`: The private key that matches the deploy user’s authorized key on Lightsail.
+   - Optional: `DEPLOY_PATH` (e.g., `/home/deploy/www/staging`) and `SUPERVISOR_PROGRAM` (e.g., `all` or a queue name) to avoid hardcoding paths in the workflow.
+
+4. **Adjust the workflow deploy step**
+   - Replace the `cd ~/www/staging` path with your Lightsail path (or reference `${{ secrets.DEPLOY_PATH }}` if you add it).
+   - Swap `sudo supervisorctl restart all` with the service restart you use on Lightsail (for example `sudo systemctl restart php8.2-fpm` or `sudo supervisorctl restart ${SUPERVISOR_PROGRAM:-all}`).
+   - Keep `artisan down/up`, `git pull`, `composer install`, and `php artisan migrate --force` unless your rollout process differs.
+
+5. **Test the pipeline**
+   - Push a test commit to the configured branch. Verify the workflow output shows the SSH deploy step running and check your Lightsail instance to confirm the code and caches updated.
+
+With these adjustments, the same CI/CD template can deploy reliably to AWS Lightsail using your existing SSH-based process.
+
 ## Adding the workflow to your repo
 1. Copy `.github/workflows/laravel-ci-cd-template.yml` into your project.
 2. Replace placeholders (branch names, paths, PHP version) with your project’s values.

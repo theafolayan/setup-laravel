@@ -58,15 +58,20 @@ jobs:
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@master
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          SUPERVISOR_PROGRAM: ${{ secrets.SUPERVISOR_PROGRAM }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           script: |
+            DEPLOY_PATH="${DEPLOY_PATH:-~/www/staging}"
+            SUPERVISOR_PROGRAM="${SUPERVISOR_PROGRAM:-all}"
             whoami
-            ~/www/staging/artisan down
-            cd ~/www/staging && git pull && composer install --no-interaction --optimize-autoloader && composer dump-autoload && php artisan migrate --force && php artisan optimize:clear
-            sudo supervisorctl restart all
-            ~/www/staging/artisan up
+            "${DEPLOY_PATH}"/artisan down
+            cd "${DEPLOY_PATH}" && git pull && composer install --no-interaction --optimize-autoloader && composer dump-autoload && php artisan migrate --force && php artisan optimize:clear
+            sudo supervisorctl restart "${SUPERVISOR_PROGRAM}"
+            "${DEPLOY_PATH}"/artisan up
             exit
