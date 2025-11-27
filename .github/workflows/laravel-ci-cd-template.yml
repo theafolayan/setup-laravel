@@ -35,8 +35,13 @@ jobs:
       - name: Generate key
         run: php artisan key:generate
 
-      - name: Generate Laravel Passport keys
-        run: php artisan passport:keys
+      - name: Generate optional Passport keys
+        run: |
+          if php artisan list --raw | grep -q '^passport:keys$'; then
+            php artisan passport:keys
+          else
+            echo "Skipping passport:keys (command not available)"
+          fi
 
       - name: Set directory permissions
         run: chmod -R 777 storage bootstrap/cache
@@ -47,7 +52,13 @@ jobs:
           touch database/database.sqlite
 
       - name: Run test suite
-        run: php artisan icons:cache && php artisan test --parallel
+        run: |
+          if php artisan list --raw | grep -q '^icons:cache$'; then
+            php artisan icons:cache
+          else
+            echo "Skipping icons:cache (command not available)"
+          fi
+          php artisan test --parallel
 
   deploy:
     name: Deploy to target host

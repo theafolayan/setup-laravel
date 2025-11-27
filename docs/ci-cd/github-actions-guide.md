@@ -19,8 +19,8 @@ This guide outlines how to automate testing and deployments whenever code is pus
    - Checks out the repository.
    - Copies `.env` and `.env.testing` from the example files when they are missing.
    - Installs Composer dependencies without dev scripts.
-   - Generates the application key and Passport keys.
-   - Prepares a SQLite database and runs `php artisan icons:cache && php artisan test --parallel`.
+   - Generates the application key and runs `passport:keys` only when the command exists.
+   - Prepares a SQLite database, warms the Blade Icons cache when available, and runs `php artisan test --parallel`.
 3. **Deploy job** (runs only if tests pass):
    - Reuses the branch condition (`refs/heads/main`) to guard deployments.
    - Connects via SSH and performs:
