@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 LOG_FILE="/var/log/laravel_setup.log"
@@ -17,6 +17,7 @@ Usage: setup_laravel_nginx_ssl.sh [options]
       --db-user USER          Database user
       --db-pass PASS          Database password
       --php-version VERSION   PHP version (default 8.4)
+      --supervisor yes|no     Install Supervisor queue worker (default no)
   -n, --non-interactive       Do not prompt for input
       --dry-run               Show commands without executing
   -h, --help                  Show this message
@@ -47,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --db-user) DBUSER="$2"; shift 2;;
         --db-pass) DBPASS="$2"; shift 2;;
         --php-version) PHP_VERSION="$2"; shift 2;;
+        --supervisor) INSTALL_SUPERVISOR="$2"; shift 2;;
         -n|--non-interactive) NON_INTERACTIVE=1; shift;;
         --dry-run) DRY_RUN=1; shift;;
         -h|--help) usage; exit 0;;
@@ -56,7 +58,7 @@ done
 
 if [[ $DRY_RUN -eq 1 ]]; then
     shopt -s expand_aliases
-    for cmd in apt-get systemctl git composer curl mv cp sed ln rm nginx certbot php add-apt-repository tee mysql psql sudo openssl; do
+    for cmd in apt-get systemctl git composer curl mv cp sed ln rm nginx certbot php add-apt-repository tee mysql psql sudo openssl supervisorctl; do
         # shellcheck disable=SC2139
         alias "$cmd"="echo DRY-RUN: $cmd"
     done
@@ -105,6 +107,10 @@ undo_install() {
                     systemctl stop memcached || true
                     apt-get remove --purge -y memcached
                     ;;
+                supervisor)
+                    systemctl stop supervisor || true
+                    apt-get remove --purge -y supervisor
+                    ;;
                 app_path:*)
                     path=${pkg#app_path:}
                     rm -rf "$path"
@@ -112,6 +118,14 @@ undo_install() {
                 nginx_conf:*)
                     conf=${pkg#nginx_conf:}
                     rm -f "$conf" "/etc/nginx/sites-enabled/$(basename "$conf")"
+                    ;;
+                supervisor_conf:*)
+                    conf=${pkg#supervisor_conf:}
+                    rm -f "$conf"
+                    if command -v supervisorctl >/dev/null 2>&1; then
+                        supervisorctl reread || true
+                        supervisorctl update || true
+                    fi
                     ;;
                 ssl_domain:*)
                     domain=${pkg#ssl_domain:}
@@ -335,6 +349,19 @@ else
     echo "Remember to set DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD in .env."
 fi
 
+# ===== Supervisor Prompt =====
+while true; do
+    prompt_if_unset INSTALL_SUPERVISOR "Install Supervisor to manage Laravel queue workers? (yes/no)" "no"
+    case "$INSTALL_SUPERVISOR" in
+        yes|no) break ;;
+        *) if [[ $NON_INTERACTIVE -eq 1 ]]; then
+               log "Invalid Supervisor choice: $INSTALL_SUPERVISOR"; exit 1
+           else
+               echo "Invalid choice. Please enter yes or no."
+           fi ;;
+    esac
+done
+
 # ===== Memcached =====
 prompt_if_unset INSTALL_MEMCACHED "Install Memcached for caching? (yes/no)" "no"
 if [[ "$INSTALL_MEMCACHED" == "yes" ]]; then
@@ -345,6 +372,41 @@ if [[ "$INSTALL_MEMCACHED" == "yes" ]]; then
     sed -i "s/^CACHE_DRIVER=.*/CACHE_DRIVER=memcached/" .env
 else
     log "Skipping Memcached installation."
+fi
+
+# ===== Supervisor Setup =====
+if [[ "$INSTALL_SUPERVISOR" == "yes" ]]; then
+    log "Installing Supervisor and configuring queue worker..."
+    apt-get install supervisor -y
+    systemctl enable --now supervisor
+    log_install "supervisor"
+
+    SUPERVISOR_CONF="/etc/supervisor/conf.d/${APP_NAME}-queue.conf"
+    PHP_BINARY="/usr/bin/php${PHP_VERSION}"
+    if [[ ! -x "$PHP_BINARY" ]]; then
+        PHP_BINARY=$(command -v php)
+    fi
+
+    tee "$SUPERVISOR_CONF" > /dev/null <<EOF
+[program:${APP_NAME}-queue]
+process_name=%(program_name)s_%(process_num)02d
+command=${PHP_BINARY} /var/www/${APP_NAME}/artisan queue:work --tries=3 --sleep=3
+autostart=true
+autorestart=true
+user=www-data
+numprocs=1
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/${APP_NAME}-queue.log
+stopwaitsecs=3600
+directory=/var/www/${APP_NAME}
+EOF
+
+    supervisorctl reread
+    supervisorctl update
+    supervisorctl enable "${APP_NAME}-queue" || true
+    log_install "supervisor_conf:${SUPERVISOR_CONF}"
+else
+    log "Skipping Supervisor installation."
 fi
 
 # ===== Laravel Caching =====
