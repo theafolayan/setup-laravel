@@ -131,6 +131,11 @@ undo_install() {
                     domain=${pkg#ssl_domain:}
                     rm -rf "/etc/letsencrypt/live/$domain" "/etc/letsencrypt/archive/$domain" "/etc/letsencrypt/renewal/$domain.conf"
                     ;;
+                cron:*)
+                    cron_file=${pkg#cron:}
+                    rm -f "$cron_file"
+                    systemctl restart cron || true
+                    ;;
             esac
         done < "$LOG_FILE"
         rm -f "$LOG_FILE"
@@ -316,6 +321,16 @@ if ! systemctl list-unit-files | grep -q "^${FPM_SERVICE}\.service"; then
 fi
 echo "Using PHP-FPM service: $FPM_SERVICE"
 
+PHP_BINARY="/usr/bin/php${PHP_VERSION}"
+if [[ ! -x "$PHP_BINARY" ]]; then
+    PHP_BINARY=$(command -v php || true)
+fi
+
+if [[ -z "$PHP_BINARY" ]]; then
+    echo "Error: PHP binary not found."
+    exit 1
+fi
+
 # ===== Composer =====
 echo "Installing Composer..."
 curl -sS https://getcomposer.org/installer | php
@@ -382,10 +397,6 @@ if [[ "$INSTALL_SUPERVISOR" == "yes" ]]; then
     log_install "supervisor"
 
     SUPERVISOR_CONF="/etc/supervisor/conf.d/${APP_NAME}-queue.conf"
-    PHP_BINARY="/usr/bin/php${PHP_VERSION}"
-    if [[ ! -x "$PHP_BINARY" ]]; then
-        PHP_BINARY=$(command -v php)
-    fi
 
     tee "$SUPERVISOR_CONF" > /dev/null <<EOF
 [program:${APP_NAME}-queue]
@@ -414,6 +425,19 @@ echo "Caching Laravel config, routes and views..."
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache
+
+# ===== Laravel Scheduler Cron =====
+echo "Configuring cron for Laravel scheduler..."
+CRON_FILE="/etc/cron.d/${APP_NAME}_schedule"
+tee "$CRON_FILE" > /dev/null <<EOF
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+* * * * * www-data cd /var/www/${APP_NAME} && ${PHP_BINARY} artisan schedule:run >> /var/www/${APP_NAME}/storage/logs/scheduler.log 2>&1
+EOF
+chmod 644 "$CRON_FILE"
+systemctl restart cron
+log_install "cron:${CRON_FILE}"
 
 # ===== Nginx Virtual Host =====
 echo "Configuring Nginx..."
