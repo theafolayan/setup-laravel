@@ -16,6 +16,7 @@ Before running this script, ensure that:
 - After the domain is entered, displays the server IP and waits for confirmation that DNS A records for the domain and www subdomain point to it.
 - Generates secure random database passwords and secures MySQL without interactive prompts.
 - Clones a Laravel project from a specified GitHub repository, installs dependencies with `--no-dev --optimize-autoloader`, and caches configuration, routes, and views for better performance.
+- Configures a cron job to run `php artisan schedule:run` every minute as `www-data`, logging to `storage/logs/scheduler.log`.
 - Automatically configures Nginx with gzip and static asset caching, disables the default site, then enables SSL using Let's Encrypt with Certbot.
 - Optionally pushes local changes back to the GitHub repository. (Coming Soon)
 
