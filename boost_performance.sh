@@ -214,32 +214,16 @@ apply_nginx_tuning() {
     if ! grep -Eq "^[[:space:]]*events[[:space:]]*\\{" "$nginx_conf"; then
         run_cmd bash -c "printf '\nevents {\n    worker_connections %s;\n    multi_accept on;\n}\n' '$worker_connections' >> '$nginx_conf'"
     else
-        WORKER_CONNECTIONS="$worker_connections" NGINX_CONF="$nginx_conf" run_cmd python - <<'PY'
-import os
-import re
-from pathlib import Path
-
-conf = Path(os.environ["NGINX_CONF"])
-text = conf.read_text()
-
-pattern = re.compile(r"events\s*\{(.*?)\}", re.S)
-
-
-def _rewrite(match) -> str:
-    body = match.group(1)
-    body = re.sub(r"^[\t ]*worker_connections\s+.*?;\s*\n?", "", body, flags=re.M)
-    body = re.sub(r"^[\t ]*multi_accept\s+.*?;\s*\n?", "", body, flags=re.M)
-    body = body.lstrip("\n")
-    return (
-        f"events {{\n    worker_connections {os.environ['WORKER_CONNECTIONS']};\n"
-        f"    multi_accept on;\n{body}}}\n"
-    )
-
-
-if pattern.search(text):
-    text = pattern.sub(_rewrite, text)
-    conf.write_text(text)
-PY
+        WORKER_CONNECTIONS="$worker_connections" NGINX_CONF="$nginx_conf" run_cmd perl -0777 -i -pe '
+my $wc = $ENV{"WORKER_CONNECTIONS"};
+s/events\s*\{(.*?)\}/do {
+    my $body = $1;
+    $body =~ s/^[\t ]*worker_connections\s+.*?;\s*\n?//mg;
+    $body =~ s/^[\t ]*multi_accept\s+.*?;\s*\n?//mg;
+    $body =~ s/^\n+//;
+    "events {\n    worker_connections ${wc};\n    multi_accept on;\n${body}}\n";
+}/egs;
+'
     fi
 
     ensure_http_directive "keepalive_timeout" "$keepalive" "$nginx_conf"
