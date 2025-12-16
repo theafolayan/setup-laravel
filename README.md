@@ -122,6 +122,13 @@ Make sure DNS A records for the new domain(s) point to your server before runnin
 
 After deployment, you can tune Nginx and PHP-FPM for the server size running your Laravel app using `boost_performance.sh`. The script creates backups before modifying configuration files and can run in dry-run or non-interactive modes.
 
+Install the script on your server (same directory as the other helper scripts) and make it executable:
+
+```bash
+wget https://raw.githubusercontent.com/theafolayan/setup-laravel/main/boost_performance.sh
+chmod +x boost_performance.sh
+```
+
 ```bash
 sudo ./boost_performance.sh --ram-gb 8
 ```
