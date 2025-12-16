@@ -214,6 +214,7 @@ apply_nginx_tuning() {
     if ! grep -Eq "^[[:space:]]*events[[:space:]]*\\{" "$nginx_conf"; then
         run_cmd bash -c "printf '\nevents {\n    worker_connections %s;\n    multi_accept on;\n}\n' '$worker_connections' >> '$nginx_conf'"
     else
+# shellcheck disable=SC2016
         WORKER_CONNECTIONS="$worker_connections" NGINX_CONF="$nginx_conf" run_cmd perl -0777 -i -pe '
 my $wc = $ENV{"WORKER_CONNECTIONS"};
 s/events\s*\{(.*?)\}/do {
@@ -223,7 +224,7 @@ s/events\s*\{(.*?)\}/do {
     $body =~ s/^\n+//;
     "events {\n    worker_connections ${wc};\n    multi_accept on;\n${body}}\n";
 }/egs;
-'
+' "$nginx_conf"
     fi
 
     ensure_http_directive "keepalive_timeout" "$keepalive" "$nginx_conf"
