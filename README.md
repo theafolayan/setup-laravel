@@ -117,3 +117,20 @@ sudo ./manage_domains.sh
 
 The script lists applications found in `/var/www` and lets you choose which one to update. It auto-detects the primary domain and shows any other domains already configured. When prompted, enter additional domain(s) to add. The script updates the Nginx configuration and obtains SSL certificates for the new domains using Certbot.
 Make sure DNS A records for the new domain(s) point to your server before running the script. You'll be prompted to type `yes` to confirm the records are in place before the script requests SSL certificates.
+
+## Boosting Performance
+
+After deployment, you can tune Nginx and PHP-FPM for the server size running your Laravel app using `boost_performance.sh`. The script creates backups before modifying configuration files and can run in dry-run or non-interactive modes.
+
+```bash
+sudo ./boost_performance.sh --ram-gb 8
+```
+
+Key options:
+
+- `--ram-gb 2|8|16|32`: Required memory profile. When omitted, you will be prompted (defaults to `8`).
+- `--php-mem-per-child-mb N`: Estimated MB per PHP-FPM worker (defaults to `110`, tuned for Laravel workloads).
+- `--php-max-children N`: Manually set `pm.max_children` instead of letting the script auto-calculate from memory.
+- `--nginx-worker-connections N`: Override the default Nginx worker connections for the selected profile.
+- `--skip-ulimits`: Skip raising file descriptor limits via systemd overrides.
+- `--dry-run`: Print planned changes without applying them.
