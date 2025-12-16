@@ -219,8 +219,8 @@ apply_nginx_tuning() {
 my $wc = $ENV{"WORKER_CONNECTIONS"};
 s/events\s*\{(.*?)\}/do {
     my $body = $1;
-    $body =~ s/^[\t ]*worker_connections\s+.*?;\s*\n?//mg;
-    $body =~ s/^[\t ]*multi_accept\s+.*?;\s*\n?//mg;
+    $body =~ s{^[\t ]*worker_connections\s+.*?;\s*\n?}{}mg;
+    $body =~ s{^[\t ]*multi_accept\s+.*?;\s*\n?}{}mg;
     $body =~ s/^\n+//;
     "events {\n    worker_connections ${wc};\n    multi_accept on;\n${body}}\n";
 }/egs;
