@@ -215,11 +215,17 @@ apply_nginx_tuning() {
         run_cmd bash -c "printf '\nevents {\n    worker_connections %s;\n    multi_accept on;\n}\n' '$worker_connections' >> '$nginx_conf'"
     else
         if ! command_exists python3; then
-            log "python3 not found; unable to update existing events block."
-            return
+            if command_exists apt-get; then
+                log "python3 not found; installing with apt-get."
+                run_cmd apt-get update -y
+                run_cmd apt-get install -y python3
+            else
+                log "python3 not found and apt-get unavailable; skipping events block update."
+            fi
         fi
 
-        WORKER_CONNECTIONS="$worker_connections" NGINX_CONF="$nginx_conf" run_cmd bash -c "python3 - <<'PY'
+        if command_exists python3; then
+            WORKER_CONNECTIONS="$worker_connections" NGINX_CONF="$nginx_conf" run_cmd bash -c "python3 - <<'PY'
 import os
 import re
 
@@ -261,6 +267,7 @@ if count == 0:
 with open(path, 'w', encoding='utf-8') as handle:
     handle.write(updated)
 PY"
+        fi
     fi
 
     ensure_http_directive "keepalive_timeout" "$keepalive" "$nginx_conf"
