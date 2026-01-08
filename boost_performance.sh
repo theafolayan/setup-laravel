@@ -214,17 +214,53 @@ apply_nginx_tuning() {
     if ! grep -Eq "^[[:space:]]*events[[:space:]]*\\{" "$nginx_conf"; then
         run_cmd bash -c "printf '\nevents {\n    worker_connections %s;\n    multi_accept on;\n}\n' '$worker_connections' >> '$nginx_conf'"
     else
-# shellcheck disable=SC2016
-        WORKER_CONNECTIONS="$worker_connections" NGINX_CONF="$nginx_conf" run_cmd perl -0777 -i -pe '
-my $wc = $ENV{"WORKER_CONNECTIONS"};
-s/events\s*\{(.*?)\}/do {
-    my $body = $1;
-    $body =~ s{^[\t ]*worker_connections\s+.*?;\s*\n?}{}mg;
-    $body =~ s{^[\t ]*multi_accept\s+.*?;\s*\n?}{}mg;
-    $body =~ s/^\n+//;
-    "events {\n    worker_connections ${wc};\n    multi_accept on;\n${body}}\n";
-}/egs;
-' "$nginx_conf"
+        if ! command_exists python3; then
+            log "python3 not found; unable to update existing events block."
+            return
+        fi
+
+        WORKER_CONNECTIONS="$worker_connections" NGINX_CONF="$nginx_conf" run_cmd bash -c "python3 - <<'PY'
+import os
+import re
+
+path = os.environ['NGINX_CONF']
+worker_connections = os.environ['WORKER_CONNECTIONS']
+
+with open(path, 'r', encoding='utf-8') as handle:
+    data = handle.read()
+
+def rewrite_events(match):
+    body = match.group(1)
+    lines = []
+    for line in body.splitlines():
+        if re.match(r'\\s*worker_connections\\b', line):
+            continue
+        if re.match(r'\\s*multi_accept\\b', line):
+            continue
+        lines.append(line)
+
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
+    body_text = '\\n'.join(lines)
+    if body_text and not body_text.endswith('\\n'):
+        body_text += '\\n'
+
+    return (
+        'events {\\n'
+        f'    worker_connections {worker_connections};\\n'
+        '    multi_accept on;\\n'
+        f'{body_text}'
+        '}'
+    )
+
+updated, count = re.subn(r'events\\s*\\{(.*?)\\}', rewrite_events, data, flags=re.S)
+if count == 0:
+    updated = data
+
+with open(path, 'w', encoding='utf-8') as handle:
+    handle.write(updated)
+PY"
     fi
 
     ensure_http_directive "keepalive_timeout" "$keepalive" "$nginx_conf"
