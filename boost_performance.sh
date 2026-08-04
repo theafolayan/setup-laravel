@@ -13,7 +13,7 @@ SKIP_ULIMITS=0
 usage() {
     cat <<'USAGE'
 Usage: boost_performance.sh [options]
-  --ram-gb 2|8|16|32              Server RAM in GB (prompted if omitted)
+  --ram-gb 2|4|8|16|32            Server RAM in GB (prompted if omitted)
   --php-max-children N            Override pm.max_children
   --php-mem-per-child-mb N        Estimated MB per php-fpm child (default 110)
   --nginx-worker-connections N    Override nginx worker_connections
@@ -24,6 +24,7 @@ Usage: boost_performance.sh [options]
 
 Examples:
   sudo ./boost_performance.sh
+  sudo ./boost_performance.sh --ram-gb 4
   sudo ./boost_performance.sh --ram-gb 8
   sudo ./boost_performance.sh --ram-gb 16 --php-mem-per-child-mb 140
 USAGE
@@ -140,6 +141,16 @@ calculate_profiles() {
             PHP_PM_MIN_SPARE="2"
             PHP_PM_MAX_SPARE="5"
             ;;
+        4)
+            NGINX_WORKER_CONNECTIONS_DEFAULT="4096"
+            NGINX_KEEPALIVE_DEFAULT="20"
+            PHP_MEMORY_LIMIT="384M"
+            PHP_OPCACHE_MEM="192"
+            PHP_PM_MAX_CHILDREN_DEFAULT="20"
+            PHP_PM_START_SERVERS="4"
+            PHP_PM_MIN_SPARE="3"
+            PHP_PM_MAX_SPARE="8"
+            ;;
         8)
             NGINX_WORKER_CONNECTIONS_DEFAULT="8192"
             NGINX_KEEPALIVE_DEFAULT="30"
@@ -171,7 +182,7 @@ calculate_profiles() {
             PHP_PM_MAX_SPARE="48"
             ;;
         *)
-            log "Unsupported RAM size: $RAM_GB. Use 2, 8, 16, or 32."
+            log "Unsupported RAM size: $RAM_GB. Use 2, 4, 8, 16, or 32."
             exit 1
             ;;
     esac
@@ -335,6 +346,7 @@ apply_php_fpm_tuning() {
     local reserve_mb
     case "$RAM_GB" in
         2) reserve_mb="700" ;;
+        4) reserve_mb="1200" ;;
         8) reserve_mb="2000" ;;
         16) reserve_mb="3500" ;;
         32) reserve_mb="6000" ;;
@@ -436,10 +448,10 @@ done
 
 require_root
 
-prompt_if_unset RAM_GB "Server RAM size in GB (2, 8, 16, 32)" "8"
+prompt_if_unset RAM_GB "Server RAM size in GB (2, 4, 8, 16, 32)" "8"
 
-if [[ ! "$RAM_GB" =~ ^(2|8|16|32)$ ]]; then
-    log "Invalid RAM_GB: $RAM_GB. Use 2, 8, 16, or 32."
+if [[ ! "$RAM_GB" =~ ^(2|4|8|16|32)$ ]]; then
+    log "Invalid RAM_GB: $RAM_GB. Use 2, 4, 8, 16, or 32."
     exit 1
 fi
 
