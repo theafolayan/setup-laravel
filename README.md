@@ -118,6 +118,75 @@ sudo ./manage_domains.sh
 The script lists applications found in `/var/www` and lets you choose which one to update. It auto-detects the primary domain and shows any other domains already configured. When prompted, enter additional domain(s) to add. The script updates the Nginx configuration and obtains SSL certificates for the new domains using Certbot.
 Make sure DNS A records for the new domain(s) point to your server before running the script. You'll be prompted to type `yes` to confirm the records are in place before the script requests SSL certificates.
 
+## Creating a Staging Copy
+
+`setup_staging.sh` clones an app that is already deployed in `/var/www` into a sibling
+staging copy, reuses the same Nginx and PHP-FPM configuration, and issues SSL for the
+staging domain. The staging `.env` is copied from the source so you only have to tweak
+credentials afterwards.
+
+### Step 1: Copy the Script
+
+```bash
+wget https://raw.githubusercontent.com/theafolayan/setup-laravel/main/setup_staging.sh
+chmod +x setup_staging.sh
+```
+
+### Step 2: Run the Script
+
+```bash
+sudo ./setup_staging.sh -p mytherapistng -d staging.mytherapist.ng
+```
+
+That clones `/var/www/mytherapistng` into `/var/www/mytherapistng-staging` and serves it
+at `https://staging.mytherapist.ng`. Both flags are prompted for when omitted, and with no
+`-p` you get a menu of the apps found in `/var/www`.
+
+What it does:
+
+- Clones from the source app's `origin` remote on the branch the source has checked out,
+  falling back to a file copy when the source is not a git repository.
+- Copies `.env` from the source, then sets `APP_ENV=staging`, `APP_DEBUG=true`,
+  `APP_URL`, and generates a **fresh `APP_KEY`** so staging sessions and encrypted values
+  stay separate from production.
+- Reuses the PHP-FPM socket detected from the source app's vhost, so staging runs on the
+  same PHP version as production.
+- Writes an Nginx vhost matching the production template plus a `noindex` header, then
+  runs Certbot with `--redirect`.
+- Leaves the config **uncached** on purpose, so the `.env` edits you make next take effect.
+
+### Safety defaults
+
+A freshly cloned staging site is live on a public domain before you have had a chance to
+edit anything, so two values are pointed somewhere inert by default:
+
+| Default | Why | Opt out |
+|---------|-----|---------|
+| `DB_DATABASE` becomes `<name>_staging` | Stops staging writing to the production database | `--keep-db-config` |
+| `MAIL_MAILER` becomes `log` | Stops staging emailing real users | `--keep-mail` |
+| No scheduler or queue worker | Stops background jobs firing against production data | `--scheduler`, `--queue` |
+
+The staging database is **not created** — the script prints the `CREATE DATABASE` command
+to run once you have set the credentials you want.
+
+If `nginx -t` fails on the generated vhost it is unlinked again immediately, so a bad
+staging config can never take down the other sites on the same server. A Certbot failure
+is also non-fatal: the site stays up on HTTP and the retry command is printed.
+
+### Key options
+
+- `-p`, `--project NAME`: existing folder in `/var/www` (prompted, or chosen from a menu).
+- `-d`, `--domain DOMAIN`: staging domain, e.g. `staging.example.com`.
+- `--suffix SUFFIX`: staging folder suffix (default `-staging`).
+- `--branch BRANCH`: branch to clone instead of the one checked out in the source.
+- `--method auto|git|copy`: force a git clone or a plain file copy.
+- `--with-storage`: copy `storage/app` from the source (production uploads).
+- `--with-www`: also request a certificate for `www.<domain>`.
+- `--force`: move an existing staging folder aside (timestamped, never deleted) and rebuild.
+- `--skip-ssl`, `--dev`, `--dry-run`, `-n`.
+
+Run `./setup_staging.sh --help` for the full list.
+
 ## Boosting Performance
 
 After deployment, you can tune Nginx and PHP-FPM for the server size running your Laravel app using `boost_performance.sh`. The script creates backups before modifying configuration files and can run in dry-run or non-interactive modes.
@@ -135,9 +204,23 @@ sudo ./boost_performance.sh --ram-gb 8
 
 Key options:
 
-- `--ram-gb 2|8|16|32`: Required memory profile. When omitted, you will be prompted (defaults to `8`).
+- `--ram-gb 2|4|8|16|32`: Required memory profile. When omitted, you will be prompted (defaults to `8`).
 - `--php-mem-per-child-mb N`: Estimated MB per PHP-FPM worker (defaults to `110`, tuned for Laravel workloads).
 - `--php-max-children N`: Manually set `pm.max_children` instead of letting the script auto-calculate from memory.
 - `--nginx-worker-connections N`: Override the default Nginx worker connections for the selected profile.
 - `--skip-ulimits`: Skip raising file descriptor limits via systemd overrides.
 - `--dry-run`: Print planned changes without applying them.
+
+### Memory Profiles
+
+Each profile sets a baseline; `pm.max_children` is then lowered if the RAM left after the reserve cannot support it (`(RAM - reserve) / --php-mem-per-child-mb`), so the values below are upper bounds.
+
+| RAM | `worker_connections` | `keepalive_timeout` | `memory_limit` | OPcache (MB) | `pm.max_children` | Reserved for OS/DB (MB) |
+|-----|----------------------|---------------------|----------------|--------------|-------------------|-------------------------|
+| 2 GB | 2048 | 15 | 256M | 128 | 10 | 700 |
+| 4 GB | 4096 | 20 | 384M | 192 | 20 | 1200 |
+| 8 GB | 8192 | 30 | 512M | 256 | 40 | 2000 |
+| 16 GB | 16384 | 45 | 512M | 384 | 80 | 3500 |
+| 32 GB | 32768 | 60 | 512M | 512 | 160 | 6000 |
+
+The 4 GB reserve assumes MySQL or PostgreSQL shares the box. If the database runs elsewhere, raise the worker count with `--php-max-children`.
