@@ -317,6 +317,80 @@ assert_contains "--help lists the staging flags" "--keep-services" \
     "$("${REPO_ROOT}/setup_staging.sh" --help 2>&1)"
 
 # ---------------------------------------------------------------------------
+section "setup_laravel_nginx_ssl.sh: PHP package repository"
+# ---------------------------------------------------------------------------
+(
+    # shellcheck source=/dev/null
+    SETUP_LARAVEL_LIB_ONLY=1 source "${REPO_ROOT}/setup_laravel_nginx_ssl.sh"
+    DRY_RUN=0
+
+    OS_RELEASE_FILE="${WORKDIR}/os-release"
+    cat > "$OS_RELEASE_FILE" <<'EOF'
+PRETTY_NAME="Ubuntu 26.04 LTS"
+NAME="Ubuntu"
+VERSION_ID="26.04"
+VERSION_CODENAME=resolute
+ID=ubuntu
+EOF
+    assert_eq "os_codename reads VERSION_CODENAME" "resolute" "$(os_codename)"
+
+    OS_RELEASE_FILE="${WORKDIR}/missing-os-release"
+    assert_eq "os_codename is empty without os-release" "" "$(os_codename)"
+
+    entry="$(php_repo_sources_entry resolute)"
+    assert_contains "sources entry targets packages.sury.org" "URIs: https://packages.sury.org/php/" "$entry"
+    assert_contains "sources entry uses the release codename" "Suites: resolute" "$entry"
+    assert_contains "sources entry is signed by the sury keyring" "Signed-By: /usr/share/keyrings/deb.sury.org-php.gpg" "$entry"
+    assert_eq "sources entry never references the PPA" "" "$(grep -i ppa <<<"$entry" || true)"
+
+    # Stale PPA entries from older runs are removed; other sources are kept.
+    APT_SOURCES_DIR="${WORKDIR}/sources.list.d"
+    mkdir -p "$APT_SOURCES_DIR"
+    touch "${APT_SOURCES_DIR}/ondrej-ubuntu-php-resolute.sources" \
+          "${APT_SOURCES_DIR}/ondrej-ubuntu-php-noble.list" \
+          "${APT_SOURCES_DIR}/ondrej-ubuntu-nginx-noble.list" \
+          "${APT_SOURCES_DIR}/docker.list"
+    remove_ondrej_ppa >/dev/null
+    if [[ ! -e "${APT_SOURCES_DIR}/ondrej-ubuntu-php-resolute.sources" && ! -e "${APT_SOURCES_DIR}/ondrej-ubuntu-php-noble.list" ]]; then
+        ok "retired ppa:ondrej/php sources are removed"
+    else
+        not_ok "retired ppa:ondrej/php sources are removed"
+    fi
+    if [[ -e "${APT_SOURCES_DIR}/ondrej-ubuntu-nginx-noble.list" && -e "${APT_SOURCES_DIR}/docker.list" ]]; then
+        ok "unrelated apt sources are left alone"
+    else
+        not_ok "unrelated apt sources are left alone"
+    fi
+
+    # A dry run must not touch the system: no download, no dpkg, no file written.
+    DRY_RUN=1
+    OS_RELEASE_FILE="${WORKDIR}/os-release"
+    PHP_REPO_SOURCES="${APT_SOURCES_DIR}/php.sources"
+    php_repo_publishes() { return 0; }
+    out="$(add_php_repository 2>&1)"
+    assert_contains "dry run prints the keyring download" "DRY-RUN: curl" "$out"
+    assert_contains "dry run prints the keyring install" "DRY-RUN: dpkg -i" "$out"
+    assert_contains "dry run shows the sources entry" "Suites: resolute" "$out"
+    if [[ ! -e "$PHP_REPO_SOURCES" ]]; then
+        ok "dry run does not write php.sources"
+    else
+        not_ok "dry run does not write php.sources"
+    fi
+
+    # A release the repository does not publish for fails before anything changes.
+    DRY_RUN=0
+    php_repo_publishes() { return 1; }
+    out="$(add_php_repository 2>&1)" || true
+    assert_contains "unpublished codename is rejected" "no PHP packages for 'resolute'" "$out"
+    if [[ ! -e "$PHP_REPO_SOURCES" ]]; then
+        ok "rejected codename writes nothing"
+    else
+        not_ok "rejected codename writes nothing"
+    fi
+
+)
+
+# ---------------------------------------------------------------------------
 PASS="$(grep -c '^P$' "$TALLY" || true)"
 FAIL="$(grep -c '^F$' "$TALLY" || true)"
 printf '\n\033[1mResult:\033[0m %d passed, %d failed\n' "$PASS" "$FAIL"

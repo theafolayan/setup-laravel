@@ -1,17 +1,18 @@
 # Laravel Deployment Automation Script
 
-This repository contains a bash script to automate the deployment of a Laravel application with Nginx, PHP, a selectable database (MySQL or PostgreSQL), optional Memcached, optional Supervisor-managed queue workers, recommended PHP OPcache settings, and SSL on an Ubuntu (or similar) server.
+This repository contains a bash script to automate the deployment of a Laravel application with Nginx, PHP, a selectable database (MySQL or PostgreSQL), optional Memcached, optional Supervisor-managed queue workers, recommended PHP OPcache settings, and SSL on an Ubuntu or Debian server.
 
 ## Prerequisites
 
 Before running this script, ensure that:
-- You have root (sudo) access to the Ubuntu server.
+- You have root (sudo) access to a server running Ubuntu 22.04, 24.04 or 26.04, or Debian 11, 12 or 13. PHP packages come from [packages.sury.org](https://packages.sury.org/php/), so the release must be one it publishes for.
 - The server is accessible and has an open port for SSH connections.
 - You have a domain name configured to point to your server.
 
 ## Features
 
 - Installs Nginx, PHP (version selectable) with recommended OPcache configuration, MySQL or PostgreSQL, optional Memcached, optional Supervisor queue workers, and Composer.
+- Installs PHP from packages.sury.org, the successor to the `ppa:ondrej/php` PPA, which stopped publishing for Ubuntu releases after 24.04. Any stale `ppa:ondrej/php` source left by an earlier run is removed first so `apt-get update` keeps working.
 - Supports interactive prompts or a fully non-interactive mode using command line flags.
 - After the domain is entered, displays the server IP and waits for confirmation that DNS A records for the domain and www subdomain point to it.
 - Generates secure random database passwords and secures MySQL without interactive prompts.
