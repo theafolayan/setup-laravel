@@ -146,9 +146,9 @@ What it does:
 
 - Clones from the source app's `origin` remote on the branch the source has checked out,
   falling back to a file copy when the source is not a git repository.
-- Copies `.env` from the source, then sets `APP_ENV=staging`, `APP_DEBUG=true`,
-  `APP_URL`, and generates a **fresh `APP_KEY`** so staging sessions and encrypted values
-  stay separate from production.
+- Copies `.env` from the source, then sets `APP_ENV=staging` and `APP_URL`, and generates
+  a **fresh `APP_KEY`** so staging sessions and encrypted values stay separate from
+  production.
 - Reuses the PHP-FPM socket detected from the source app's vhost, so staging runs on the
   same PHP version as production.
 - Writes an Nginx vhost matching the production template plus a `noindex` header, then
@@ -158,16 +158,26 @@ What it does:
 ### Safety defaults
 
 A freshly cloned staging site is live on a public domain before you have had a chance to
-edit anything, so two values are pointed somewhere inert by default:
+edit anything, and the `.env` it starts with is production's. Anything in there that
+points at shared infrastructure is redirected somewhere inert by default:
 
 | Default | Why | Opt out |
 |---------|-----|---------|
-| `DB_DATABASE` becomes `<name>_staging` | Stops staging writing to the production database | `--keep-db-config` |
+| `DB_DATABASE` becomes `<name>_staging`, and `DB_URL` is cleared | Stops staging writing to the production database. `DB_URL` is a full DSN that overrides `DB_DATABASE`, so renaming the database alone would not be enough | `--keep-db-config` |
 | `MAIL_MAILER` becomes `log` | Stops staging emailing real users | `--keep-mail` |
+| `CACHE_STORE`/`CACHE_DRIVER` and `SESSION_DRIVER` become `file`, `QUEUE_CONNECTION` becomes `sync` | On a shared Redis these share production's keyspace: staging could evict production cache entries (`cache:clear` on a Redis store flushes the whole database, not just one prefix) and push jobs that production workers would execute | `--keep-services` |
+| `APP_DEBUG=false` | Laravel's debug page renders the environment, which still holds the production secrets copied from the source `.env` | `--debug` |
 | No scheduler or queue worker | Stops background jobs firing against production data | `--scheduler`, `--queue` |
+
+Only keys the source `.env` already defines are rewritten, so nothing is added to an app
+that does not use them.
 
 The staging database is **not created** — the script prints the `CREATE DATABASE` command
 to run once you have set the credentials you want.
+
+`APP_URL` starts as `http://` and is upgraded to `https://` only after Certbot succeeds,
+so `--skip-ssl` or a failed certificate does not leave the app generating HTTPS links for
+an endpoint that cannot serve them.
 
 If `nginx -t` fails on the generated vhost it is unlinked again immediately, so a bad
 staging config can never take down the other sites on the same server. A Certbot failure
@@ -186,6 +196,16 @@ is also non-fatal: the site stays up on HTTP and the retry command is printed.
 - `--skip-ssl`, `--dev`, `--dry-run`, `-n`.
 
 Run `./setup_staging.sh --help` for the full list.
+
+## Tests
+
+```bash
+./tests/run_tests.sh
+```
+
+Covers the memory profiles, `.env` rewriting, the production-isolation defaults and
+their opt-outs, PHP-FPM socket detection, and argument validation. CI runs the suite
+as both an unprivileged user and root, plus `shellcheck` over every script.
 
 ## Boosting Performance
 
