@@ -127,7 +127,11 @@ set_env_value() {
         return 1
     fi
     if grep -Eq "^[[:space:]]*#?[[:space:]]*${key}[[:space:]]*=" "$file"; then
-        run_cmd perl -i -pe "s~^[\\t ]*#?[\\t ]*${key}[\\t ]*=.*~${key}=${value}~" "$file"
+        # Key and value are passed through the environment rather than
+        # interpolated into the expression, so a value containing the
+        # delimiter, a backslash or a sigil is written literally.
+        run_cmd env "ENV_KEY=$key" "ENV_VALUE=$value" perl -i -pe \
+            's~^[\t ]*#?[\t ]*\Q$ENV{ENV_KEY}\E[\t ]*=.*~$ENV{ENV_KEY}."=".$ENV{ENV_VALUE}~e' "$file"
     else
         # Pass key/value as arguments rather than interpolating them into the
         # command string, which would break on a value containing a quote.

@@ -16,6 +16,7 @@ Before running this script, ensure that:
 - Supports interactive prompts or a fully non-interactive mode using command line flags.
 - After the domain is entered, displays the server IP and waits for confirmation that DNS A records for the domain and www subdomain point to it.
 - Generates secure random database passwords and secures MySQL without interactive prompts.
+- Writes the database credentials into `.env`, uncommenting the keys when needed. Laravel 11 and 12 ship every `DB_*` key commented out, and a generated password often contains characters that a naive substitution would mangle.
 - Clones a Laravel project from a specified GitHub repository, installs dependencies with `--no-dev --optimize-autoloader`, and caches configuration, routes, and views for better performance.
 - Configures a cron job to run `php artisan schedule:run` every minute as `www-data`, logging to `storage/logs/scheduler.log`.
 - Automatically configures Nginx with gzip and static asset caching, disables the default site, then enables SSL using Let's Encrypt with Certbot.

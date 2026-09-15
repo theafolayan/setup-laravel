@@ -136,6 +136,11 @@ EOF
     set_env_value "$env_file" QUOTED "it's fine"
     assert_eq "set_env_value survives a single quote" "it's fine" "$(get_env_value "$env_file" QUOTED)"
 
+    # Regression: the value was interpolated into the perl expression, so the
+    # delimiter and perl's sigils corrupted it.
+    set_env_value "$env_file" METACHARS 'a~b$c@d\e/f'
+    assert_eq "set_env_value survives perl metacharacters" 'a~b$c@d\e/f' "$(get_env_value "$env_file" METACHARS)"
+
     assert_eq "unrelated keys untouched" "p@ss#word" "$(get_env_value "$env_file" DB_PASSWORD)"
 
     # set_env_value_if_present must not create keys the app does not use.
@@ -386,6 +391,80 @@ EOF
         ok "rejected codename writes nothing"
     else
         not_ok "rejected codename writes nothing"
+    fi
+
+)
+
+# ---------------------------------------------------------------------------
+section "setup_laravel_nginx_ssl.sh: .env editing"
+# ---------------------------------------------------------------------------
+(
+    # shellcheck source=/dev/null
+    SETUP_LARAVEL_LIB_ONLY=1 source "${REPO_ROOT}/setup_laravel_nginx_ssl.sh"
+    DRY_RUN=0
+
+    # Read a key back without relying on the helper under test.
+    val() { grep -E "^$2=" "$1" | head -n1 | cut -d= -f2-; }
+
+    # Laravel 11 and 12 ship every DB_* key commented out.
+    env_file="${WORKDIR}/deploy_env"
+    cat > "$env_file" <<'EOF'
+APP_ENV=production
+DB_CONNECTION=sqlite
+# DB_HOST=127.0.0.1
+# DB_PORT=3306
+# DB_DATABASE=laravel
+# DB_USERNAME=root
+# DB_PASSWORD=
+CACHE_STORE=database
+EOF
+
+    set_env_value "$env_file" DB_CONNECTION mysql
+    assert_eq "rewrites an uncommented key" "mysql" "$(val "$env_file" DB_CONNECTION)"
+
+    set_env_value "$env_file" DB_DATABASE laravel_db
+    assert_eq "uncomments and rewrites a commented key" "laravel_db" "$(val "$env_file" DB_DATABASE)"
+    assert_eq "no commented duplicate is left behind" "" "$(grep -E '^# ?DB_DATABASE=' "$env_file" || true)"
+
+    # The reported failure: openssl rand -base64 emits '/' about a quarter of
+    # the time, which terminated the old sed s/// expression early.
+    set_env_value "$env_file" DB_PASSWORD 'aB/cd+eF/gh=='
+    assert_eq "writes a password containing slashes" 'aB/cd+eF/gh==' "$(val "$env_file" DB_PASSWORD)"
+
+    set_env_value "$env_file" DB_USERNAME 'us~er$name@host\with\slash'
+    assert_eq "writes a value with perl metacharacters" 'us~er$name@host\with\slash' "$(val "$env_file" DB_USERNAME)"
+
+    assert_eq "an unrelated key is untouched" "production" "$(val "$env_file" APP_ENV)"
+
+    set_env_value "$env_file" BRAND_NEW appended
+    assert_eq "appends a key the file does not define" "appended" "$(val "$env_file" BRAND_NEW)"
+
+    # Laravel 11 renamed CACHE_DRIVER to CACHE_STORE; write whichever exists.
+    if set_env_value_if_present "$env_file" CACHE_STORE memcached; then
+        ok "set_env_value_if_present rewrites a present key"
+    else
+        not_ok "set_env_value_if_present rewrites a present key"
+    fi
+    assert_eq "CACHE_STORE was rewritten" "memcached" "$(val "$env_file" CACHE_STORE)"
+
+    if set_env_value_if_present "$env_file" CACHE_DRIVER memcached; then
+        not_ok "set_env_value_if_present skips an absent key"
+    else
+        ok "set_env_value_if_present skips an absent key"
+    fi
+    assert_eq "the legacy key was not added" "" "$(val "$env_file" CACHE_DRIVER)"
+
+    # A real run must fail loudly on a missing .env; a dry run must not.
+    if set_env_value "${WORKDIR}/no_such_env" DB_PORT 3306 2>/dev/null; then
+        not_ok "a missing .env fails a real run"
+    else
+        ok "a missing .env fails a real run"
+    fi
+    DRY_RUN=1
+    if set_env_value "${WORKDIR}/no_such_env" DB_PORT 3306 >/dev/null; then
+        ok "a missing .env is tolerated under --dry-run"
+    else
+        not_ok "a missing .env is tolerated under --dry-run"
     fi
 
 )

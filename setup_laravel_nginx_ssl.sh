@@ -120,6 +120,50 @@ add_php_repository() {
     fi
 }
 
+# ===== .env editing =====
+# Laravel's .env.example ships many keys commented out (Laravel 11 and 12 do
+# this for every DB_* key), so an anchored "^KEY=" match would silently skip
+# them and leave the app on the example defaults. These helpers rewrite a
+# commented key in place and append one that is genuinely absent.
+#
+# Key and value reach perl through the environment rather than being
+# interpolated into the expression, so a value containing a slash, a quote, a
+# backslash or a sigil is written literally. A generated password from
+# `openssl rand -base64` contains a slash roughly a quarter of the time, which
+# is what made the previous sed-based version fail.
+env_key_present() {
+    grep -Eq "^[[:space:]]*#?[[:space:]]*$2[[:space:]]*=" "$1"
+}
+
+set_env_value() {
+    local file="$1" key="$2" value="$3"
+    if [[ ! -f "$file" ]]; then
+        # Under --dry-run the app was never cloned, so there is no .env yet.
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            echo "DRY-RUN: would set ${key} in ${file}"
+            return 0
+        fi
+        echo "Env file not found: $file" >&2
+        return 1
+    fi
+    if env_key_present "$file" "$key"; then
+        run_cmd env "ENV_KEY=$key" "ENV_VALUE=$value" perl -i -pe \
+            's~^[\t ]*#?[\t ]*\Q$ENV{ENV_KEY}\E[\t ]*=.*~$ENV{ENV_KEY}."=".$ENV{ENV_VALUE}~e' "$file"
+    else
+        run_cmd bash -c 'printf "\n%s=%s\n" "$1" "$2" >> "$3"' _ "$key" "$value" "$file"
+    fi
+}
+
+# Rewrite a key only when the file already defines it. Returns 1 when absent,
+# so callers can try an alternative spelling.
+set_env_value_if_present() {
+    if [[ -f "$1" ]] && env_key_present "$1" "$2"; then
+        set_env_value "$1" "$2" "$3"
+        return 0
+    fi
+    return 1
+}
+
 # tests/run_tests.sh sources this file to unit test the helpers above without
 # running a deployment.
 if [[ -n "${SETUP_LARAVEL_LIB_ONLY:-}" ]]; then
@@ -446,11 +490,12 @@ log_install "app_path:/var/www/$APP_NAME"
 
 # ===== Configure .env =====
 if [[ -n "$DB_DRIVER" ]]; then
-    sed -i "s/^DB_CONNECTION=.*/DB_CONNECTION=${DB_DRIVER}/" .env
-    sed -i "s/^DB_PORT=.*/DB_PORT=${DB_PORT}/" .env
-    sed -i "s/^DB_DATABASE=.*/DB_DATABASE=${DBNAME}/" .env
-    sed -i "s/^DB_USERNAME=.*/DB_USERNAME=${DBUSER}/" .env
-    sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=${DBPASS}/" .env
+    set_env_value .env DB_CONNECTION "$DB_DRIVER"
+    set_env_value .env DB_HOST 127.0.0.1
+    set_env_value .env DB_PORT "$DB_PORT"
+    set_env_value .env DB_DATABASE "$DBNAME"
+    set_env_value .env DB_USERNAME "$DBUSER"
+    set_env_value .env DB_PASSWORD "$DBPASS"
 else
     echo "Remember to set DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD in .env."
 fi
@@ -475,7 +520,12 @@ if [[ "$INSTALL_MEMCACHED" == "yes" ]]; then
     apt-get install memcached -y
     systemctl enable --now memcached
     log_install "memcached"
-    sed -i "s/^CACHE_DRIVER=.*/CACHE_DRIVER=memcached/" .env
+    # Laravel 11 renamed CACHE_DRIVER to CACHE_STORE. Write whichever the app
+    # actually defines, so Memcached does not end up installed but unused.
+    if ! set_env_value_if_present .env CACHE_STORE memcached \
+        && ! set_env_value_if_present .env CACHE_DRIVER memcached; then
+        set_env_value .env CACHE_STORE memcached
+    fi
 else
     log "Skipping Memcached installation."
 fi
