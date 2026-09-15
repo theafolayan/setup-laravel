@@ -432,6 +432,12 @@ EOF
     log "systemd overrides applied and services restarted."
 }
 
+# tests/run_tests.sh sources this file to unit test the helpers above without
+# touching the system configuration.
+if [[ -n "${SETUP_LARAVEL_LIB_ONLY:-}" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ram-gb) RAM_GB="${2:-}"; shift 2;;

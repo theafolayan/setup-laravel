@@ -1,0 +1,45 @@
+name: CI
+
+# AGENTS.md requires shellcheck on any modified shell script and test coverage
+# for new features. This runs both.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Lint shell scripts
+        # -S warning skips purely stylistic advice and fails on real problems.
+        # Drop the flag to see the full report locally.
+        run: |
+          shellcheck --version
+          shellcheck -S warning \
+            setup_laravel_nginx_ssl.sh \
+            setup_staging.sh \
+            boost_performance.sh \
+            manage_domains.sh \
+            tests/run_tests.sh
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run test suite
+        run: ./tests/run_tests.sh
+
+      - name: Run test suite as root
+        # The scripts refuse to run unprivileged, so the argument-validation
+        # paths are only reachable as root.
+        run: sudo ./tests/run_tests.sh

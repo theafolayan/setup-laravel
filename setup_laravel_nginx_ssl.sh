@@ -37,6 +37,139 @@ prompt_if_unset() {
     ref=${ref:-$default}
 }
 
+# Run a command, or only print it when --dry-run is set.
+run_cmd() {
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        printf 'DRY-RUN:'
+        printf ' %q' "$@"
+        printf '\n'
+    else
+        "$@"
+    fi
+}
+
+# ===== PHP package repository =====
+# PHP is installed from Ondřej Surý's packages.sury.org. It replaced the
+# ppa:ondrej/php PPA, which stopped publishing for Ubuntu releases after 24.04
+# "noble" (26.04 "resolute" gets a 404 Release file), and it also serves Debian.
+PHP_REPO_URL="https://packages.sury.org/php/"
+PHP_REPO_KEYRING_URL="https://packages.sury.org/debsuryorg-archive-keyring.deb"
+PHP_REPO_KEYRING="/usr/share/keyrings/deb.sury.org-php.gpg"
+APT_SOURCES_DIR="/etc/apt/sources.list.d"
+PHP_REPO_SOURCES="${APT_SOURCES_DIR}/php.sources"
+OS_RELEASE_FILE="/etc/os-release"
+
+# Print the release codename (jammy, noble, resolute, bookworm, ...) or nothing.
+os_codename() {
+    [[ -r "$OS_RELEASE_FILE" ]] || return 0
+    # shellcheck source=/dev/null
+    ( . "$OS_RELEASE_FILE" && printf '%s\n' "${VERSION_CODENAME:-}" )
+}
+
+# Render the deb822 apt source for packages.sury.org for one codename.
+php_repo_sources_entry() {
+    cat <<EOF
+Types: deb
+URIs: ${PHP_REPO_URL}
+Suites: $1
+Components: main
+Signed-By: ${PHP_REPO_KEYRING}
+EOF
+}
+
+# True when packages.sury.org publishes a Release file for the codename.
+php_repo_publishes() {
+    curl -fsSL -o /dev/null "${PHP_REPO_URL}dists/$1/Release"
+}
+
+# Drop ppa:ondrej/php entries left by earlier versions of this script. On
+# releases the PPA no longer serves, they break every apt-get update.
+remove_ondrej_ppa() {
+    local f
+    for f in "${APT_SOURCES_DIR}"/ondrej-ubuntu-php-*; do
+        [[ -e "$f" ]] || continue
+        log "Removing retired ppa:ondrej/php source: $f"
+        run_cmd rm -f "$f"
+    done
+}
+
+# Install the signing keyring and write the apt source for packages.sury.org.
+add_php_repository() {
+    local codename keyring_deb
+    codename="$(os_codename)"
+    if [[ -z "$codename" ]]; then
+        echo "Could not read VERSION_CODENAME from ${OS_RELEASE_FILE}." >&2
+        exit 1
+    fi
+    if ! php_repo_publishes "$codename"; then
+        echo "packages.sury.org has no PHP packages for '${codename}' (or could not be reached)." >&2
+        echo "Published suites are listed at ${PHP_REPO_URL}dists/ - use an Ubuntu LTS or Debian stable release." >&2
+        exit 1
+    fi
+    remove_ondrej_ppa
+    log "Adding ${PHP_REPO_URL} (${codename}) as the PHP package source..."
+    keyring_deb="$(mktemp)"
+    run_cmd curl -fsSL -o "$keyring_deb" "$PHP_REPO_KEYRING_URL"
+    run_cmd dpkg -i "$keyring_deb"
+    rm -f "$keyring_deb"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo "DRY-RUN: write ${PHP_REPO_SOURCES}:"
+        php_repo_sources_entry "$codename"
+    else
+        php_repo_sources_entry "$codename" > "$PHP_REPO_SOURCES"
+    fi
+}
+
+# ===== .env editing =====
+# Laravel's .env.example ships many keys commented out (Laravel 11 and 12 do
+# this for every DB_* key), so an anchored "^KEY=" match would silently skip
+# them and leave the app on the example defaults. These helpers rewrite a
+# commented key in place and append one that is genuinely absent.
+#
+# Key and value reach perl through the environment rather than being
+# interpolated into the expression, so a value containing a slash, a quote, a
+# backslash or a sigil is written literally. A generated password from
+# `openssl rand -base64` contains a slash roughly a quarter of the time, which
+# is what made the previous sed-based version fail.
+env_key_present() {
+    grep -Eq "^[[:space:]]*#?[[:space:]]*$2[[:space:]]*=" "$1"
+}
+
+set_env_value() {
+    local file="$1" key="$2" value="$3"
+    if [[ ! -f "$file" ]]; then
+        # Under --dry-run the app was never cloned, so there is no .env yet.
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            echo "DRY-RUN: would set ${key} in ${file}"
+            return 0
+        fi
+        echo "Env file not found: $file" >&2
+        return 1
+    fi
+    if env_key_present "$file" "$key"; then
+        run_cmd env "ENV_KEY=$key" "ENV_VALUE=$value" perl -i -pe \
+            's~^[\t ]*#?[\t ]*\Q$ENV{ENV_KEY}\E[\t ]*=.*~$ENV{ENV_KEY}."=".$ENV{ENV_VALUE}~e' "$file"
+    else
+        run_cmd bash -c 'printf "\n%s=%s\n" "$1" "$2" >> "$3"' _ "$key" "$value" "$file"
+    fi
+}
+
+# Rewrite a key only when the file already defines it. Returns 1 when absent,
+# so callers can try an alternative spelling.
+set_env_value_if_present() {
+    if [[ -f "$1" ]] && env_key_present "$1" "$2"; then
+        set_env_value "$1" "$2" "$3"
+        return 0
+    fi
+    return 1
+}
+
+# tests/run_tests.sh sources this file to unit test the helpers above without
+# running a deployment.
+if [[ -n "${SETUP_LARAVEL_LIB_ONLY:-}" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -a|--app-name) APP_NAME="$2"; shift 2;;
@@ -58,7 +191,7 @@ done
 
 if [[ $DRY_RUN -eq 1 ]]; then
     shopt -s expand_aliases
-    for cmd in apt-get systemctl git composer curl mv cp sed ln rm nginx certbot php add-apt-repository tee mysql psql sudo openssl supervisorctl; do
+    for cmd in apt-get systemctl git composer curl mv cp sed ln rm nginx certbot php tee mysql psql sudo openssl supervisorctl; do
         # shellcheck disable=SC2139
         alias "$cmd"="echo DRY-RUN: $cmd"
     done
@@ -190,6 +323,7 @@ if [[ "$DB_CHOICE" == "mysql" || "$DB_CHOICE" == "postgresql" ]]; then
 fi
 
 # ===== System Update =====
+remove_ondrej_ppa
 log "Updating package lists..."
 apt-get update -y
 prompt_if_unset RUN_UPGRADE "Run full system upgrade? (yes/no)" "no"
@@ -249,8 +383,9 @@ else
 fi
 
 # ===== PHP Version Prompt & Validation =====
-log "Adding PHP PPA and fetching available versions..."
-add-apt-repository ppa:ondrej/php -y
+log "Configuring the PHP package repository and fetching available versions..."
+apt-get install -y curl ca-certificates
+add_php_repository
 apt-get update -y
 
 AVAILABLE_VERSIONS=$(apt-cache pkgnames \
@@ -355,11 +490,12 @@ log_install "app_path:/var/www/$APP_NAME"
 
 # ===== Configure .env =====
 if [[ -n "$DB_DRIVER" ]]; then
-    sed -i "s/^DB_CONNECTION=.*/DB_CONNECTION=${DB_DRIVER}/" .env
-    sed -i "s/^DB_PORT=.*/DB_PORT=${DB_PORT}/" .env
-    sed -i "s/^DB_DATABASE=.*/DB_DATABASE=${DBNAME}/" .env
-    sed -i "s/^DB_USERNAME=.*/DB_USERNAME=${DBUSER}/" .env
-    sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=${DBPASS}/" .env
+    set_env_value .env DB_CONNECTION "$DB_DRIVER"
+    set_env_value .env DB_HOST 127.0.0.1
+    set_env_value .env DB_PORT "$DB_PORT"
+    set_env_value .env DB_DATABASE "$DBNAME"
+    set_env_value .env DB_USERNAME "$DBUSER"
+    set_env_value .env DB_PASSWORD "$DBPASS"
 else
     echo "Remember to set DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD in .env."
 fi
@@ -384,7 +520,12 @@ if [[ "$INSTALL_MEMCACHED" == "yes" ]]; then
     apt-get install memcached -y
     systemctl enable --now memcached
     log_install "memcached"
-    sed -i "s/^CACHE_DRIVER=.*/CACHE_DRIVER=memcached/" .env
+    # Laravel 11 renamed CACHE_DRIVER to CACHE_STORE. Write whichever the app
+    # actually defines, so Memcached does not end up installed but unused.
+    if ! set_env_value_if_present .env CACHE_STORE memcached \
+        && ! set_env_value_if_present .env CACHE_DRIVER memcached; then
+        set_env_value .env CACHE_STORE memcached
+    fi
 else
     log "Skipping Memcached installation."
 fi

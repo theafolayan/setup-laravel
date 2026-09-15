@@ -1,20 +1,22 @@
 # Laravel Deployment Automation Script
 
-This repository contains a bash script to automate the deployment of a Laravel application with Nginx, PHP, a selectable database (MySQL or PostgreSQL), optional Memcached, optional Supervisor-managed queue workers, recommended PHP OPcache settings, and SSL on an Ubuntu (or similar) server.
+This repository contains a bash script to automate the deployment of a Laravel application with Nginx, PHP, a selectable database (MySQL or PostgreSQL), optional Memcached, optional Supervisor-managed queue workers, recommended PHP OPcache settings, and SSL on an Ubuntu or Debian server.
 
 ## Prerequisites
 
 Before running this script, ensure that:
-- You have root (sudo) access to the Ubuntu server.
+- You have root (sudo) access to a server running Ubuntu 22.04, 24.04 or 26.04, or Debian 11, 12 or 13. PHP packages come from [packages.sury.org](https://packages.sury.org/php/), so the release must be one it publishes for.
 - The server is accessible and has an open port for SSH connections.
 - You have a domain name configured to point to your server.
 
 ## Features
 
 - Installs Nginx, PHP (version selectable) with recommended OPcache configuration, MySQL or PostgreSQL, optional Memcached, optional Supervisor queue workers, and Composer.
+- Installs PHP from packages.sury.org, the successor to the `ppa:ondrej/php` PPA, which stopped publishing for Ubuntu releases after 24.04. Any stale `ppa:ondrej/php` source left by an earlier run is removed first so `apt-get update` keeps working.
 - Supports interactive prompts or a fully non-interactive mode using command line flags.
 - After the domain is entered, displays the server IP and waits for confirmation that DNS A records for the domain and www subdomain point to it.
 - Generates secure random database passwords and secures MySQL without interactive prompts.
+- Writes the database credentials into `.env`, uncommenting the keys when needed. Laravel 11 and 12 ship every `DB_*` key commented out, and a generated password often contains characters that a naive substitution would mangle.
 - Clones a Laravel project from a specified GitHub repository, installs dependencies with `--no-dev --optimize-autoloader`, and caches configuration, routes, and views for better performance.
 - Configures a cron job to run `php artisan schedule:run` every minute as `www-data`, logging to `storage/logs/scheduler.log`.
 - Automatically configures Nginx with gzip and static asset caching, disables the default site, then enables SSL using Let's Encrypt with Certbot.
@@ -146,9 +148,9 @@ What it does:
 
 - Clones from the source app's `origin` remote on the branch the source has checked out,
   falling back to a file copy when the source is not a git repository.
-- Copies `.env` from the source, then sets `APP_ENV=staging`, `APP_DEBUG=true`,
-  `APP_URL`, and generates a **fresh `APP_KEY`** so staging sessions and encrypted values
-  stay separate from production.
+- Copies `.env` from the source, then sets `APP_ENV=staging` and `APP_URL`, and generates
+  a **fresh `APP_KEY`** so staging sessions and encrypted values stay separate from
+  production.
 - Reuses the PHP-FPM socket detected from the source app's vhost, so staging runs on the
   same PHP version as production.
 - Writes an Nginx vhost matching the production template plus a `noindex` header, then
@@ -158,16 +160,26 @@ What it does:
 ### Safety defaults
 
 A freshly cloned staging site is live on a public domain before you have had a chance to
-edit anything, so two values are pointed somewhere inert by default:
+edit anything, and the `.env` it starts with is production's. Anything in there that
+points at shared infrastructure is redirected somewhere inert by default:
 
 | Default | Why | Opt out |
 |---------|-----|---------|
-| `DB_DATABASE` becomes `<name>_staging` | Stops staging writing to the production database | `--keep-db-config` |
+| `DB_DATABASE` becomes `<name>_staging`, and `DB_URL` is cleared | Stops staging writing to the production database. `DB_URL` is a full DSN that overrides `DB_DATABASE`, so renaming the database alone would not be enough | `--keep-db-config` |
 | `MAIL_MAILER` becomes `log` | Stops staging emailing real users | `--keep-mail` |
+| `CACHE_STORE`/`CACHE_DRIVER` and `SESSION_DRIVER` become `file`, `QUEUE_CONNECTION` becomes `sync` | On a shared Redis these share production's keyspace: staging could evict production cache entries (`cache:clear` on a Redis store flushes the whole database, not just one prefix) and push jobs that production workers would execute | `--keep-services` |
+| `APP_DEBUG=false` | Laravel's debug page renders the environment, which still holds the production secrets copied from the source `.env` | `--debug` |
 | No scheduler or queue worker | Stops background jobs firing against production data | `--scheduler`, `--queue` |
+
+Only keys the source `.env` already defines are rewritten, so nothing is added to an app
+that does not use them.
 
 The staging database is **not created** — the script prints the `CREATE DATABASE` command
 to run once you have set the credentials you want.
+
+`APP_URL` starts as `http://` and is upgraded to `https://` only after Certbot succeeds,
+so `--skip-ssl` or a failed certificate does not leave the app generating HTTPS links for
+an endpoint that cannot serve them.
 
 If `nginx -t` fails on the generated vhost it is unlinked again immediately, so a bad
 staging config can never take down the other sites on the same server. A Certbot failure
@@ -186,6 +198,16 @@ is also non-fatal: the site stays up on HTTP and the retry command is printed.
 - `--skip-ssl`, `--dev`, `--dry-run`, `-n`.
 
 Run `./setup_staging.sh --help` for the full list.
+
+## Tests
+
+```bash
+./tests/run_tests.sh
+```
+
+Covers the memory profiles, `.env` rewriting, the production-isolation defaults and
+their opt-outs, PHP-FPM socket detection, and argument validation. CI runs the suite
+as both an unprivileged user and root, plus `shellcheck` over every script.
 
 ## Boosting Performance
 

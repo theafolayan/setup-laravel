@@ -16,6 +16,8 @@ WITH_WWW=0
 WITH_STORAGE=0
 KEEP_DB_CONFIG=0
 KEEP_MAIL=0
+KEEP_SERVICES=0
+APP_DEBUG_ON=0
 INSTALL_SCHEDULER=0
 INSTALL_QUEUE=0
 COMPOSER_DEV=0
@@ -44,8 +46,11 @@ credentials afterwards.
       --fpm-socket PATH     Override the detected PHP-FPM socket
       --with-www            Also request a certificate for www.<domain>
       --with-storage        Copy storage/app from the source (prod uploads)
-      --keep-db-config      Keep DB_DATABASE as-is instead of appending _staging
+      --keep-db-config      Keep the source database settings (DB_DATABASE, DB_URL)
       --keep-mail           Keep MAIL_MAILER as-is instead of forcing "log"
+      --keep-services       Keep the source cache, session and queue settings
+      --debug               Set APP_DEBUG=true (off by default: debug pages render
+                            the production secrets still sitting in the copied .env)
       --scheduler           Install the schedule:run cron for the staging app
       --queue               Install a Supervisor queue worker for the staging app
       --dev                 composer install with dev dependencies
@@ -122,21 +127,47 @@ set_env_value() {
         return 1
     fi
     if grep -Eq "^[[:space:]]*#?[[:space:]]*${key}[[:space:]]*=" "$file"; then
-        run_cmd perl -i -pe "s~^[\\t ]*#?[\\t ]*${key}[\\t ]*=.*~${key}=${value}~" "$file"
+        # Key and value are passed through the environment rather than
+        # interpolated into the expression, so a value containing the
+        # delimiter, a backslash or a sigil is written literally.
+        run_cmd env "ENV_KEY=$key" "ENV_VALUE=$value" perl -i -pe \
+            's~^[\t ]*#?[\t ]*\Q$ENV{ENV_KEY}\E[\t ]*=.*~$ENV{ENV_KEY}."=".$ENV{ENV_VALUE}~e' "$file"
     else
-        run_cmd bash -c "printf '\n%s=%s\n' '$key' '$value' >> '$file'"
+        # Pass key/value as arguments rather than interpolating them into the
+        # command string, which would break on a value containing a quote.
+        run_cmd bash -c 'printf "\n%s=%s\n" "$1" "$2" >> "$3"' _ "$key" "$value" "$file"
     fi
 }
 
+# Rewrite a key only when the source .env already defines it. Used for settings
+# that are meaningless to add to an app that does not use them.
+set_env_value_if_present() {
+    local file="$1" key="$2" value="$3"
+    if [[ ! -f "$file" ]]; then
+        [[ "$DRY_RUN" -eq 1 ]] && log "DRY-RUN: would set ${key}=${value} in ${file} if present"
+        return 0
+    fi
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+        set_env_value "$file" "$key" "$value"
+        return 0
+    fi
+    return 1
+}
+
 get_env_value() {
-    local file="$1" key="$2"
+    local file="$1" key="$2" raw=""
     [[ -f "$file" ]] || return 0
-    grep -E "^[[:space:]]*${key}[[:space:]]*=" "$file" \
-        | head -n1 \
-        | cut -d= -f2- \
-        | tr -d '"' \
-        | tr -d "'" \
-        | xargs 2>/dev/null || true
+    raw="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$file" | head -n1 | cut -d= -f2- || true)"
+    # Trim surrounding whitespace, then strip one matched pair of surrounding
+    # quotes. Stripping every quote would corrupt values containing an apostrophe.
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    if [[ "$raw" == \"*\" && ${#raw} -ge 2 ]]; then
+        raw="${raw:1:${#raw}-2}"
+    elif [[ "$raw" == \'*\' && ${#raw} -ge 2 ]]; then
+        raw="${raw:1:${#raw}-2}"
+    fi
+    printf '%s' "$raw"
 }
 
 detect_source_vhost() {
@@ -186,6 +217,10 @@ validate_inputs() {
         auto|git|copy) ;;
         *) log "Invalid --method: $METHOD. Use auto, git, or copy."; exit 1;;
     esac
+    if [[ -z "$SUFFIX" ]]; then
+        log "Suffix must not be empty; staging folder would overwrite the source."
+        exit 1
+    fi
 }
 
 list_projects() {
@@ -204,7 +239,7 @@ resolve_paths() {
         exit 1
     fi
     if [[ "$STAGING_NAME" == "$PROJECT" ]]; then
-        log "Suffix must not be empty; staging folder would overwrite the source."
+        log "Staging folder resolves to the source folder; choose a different --suffix."
         exit 1
     fi
 }
@@ -331,13 +366,24 @@ seed_env() {
     fi
 
     set_env_value "$dest_env" "APP_ENV" "staging"
-    set_env_value "$dest_env" "APP_DEBUG" "true"
-    set_env_value "$dest_env" "APP_URL" "https://${DOMAIN}"
 
-    # A staging site that inherits the production database or mailer will happily
-    # write to it before anyone edits .env, so both are pointed somewhere inert.
+    # Debug pages render environment variables, and this .env still holds whatever
+    # production secrets were copied over, so keep it off unless asked.
+    if [[ "$APP_DEBUG_ON" -eq 1 ]]; then
+        set_env_value "$dest_env" "APP_DEBUG" "true"
+    else
+        set_env_value "$dest_env" "APP_DEBUG" "false"
+    fi
+
+    # Start on http; finalize_env upgrades this once a certificate actually exists,
+    # so --skip-ssl or a Certbot failure does not leave the app generating https
+    # links for an endpoint that cannot serve them.
+    set_env_value "$dest_env" "APP_URL" "http://${DOMAIN}"
+
+    # A staging site that inherits production's database, mailer or cache will
+    # happily write to them before anyone edits .env, so point them somewhere inert.
     if [[ "$KEEP_DB_CONFIG" -eq 1 ]]; then
-        log "Keeping DB_DATABASE from the source .env as requested."
+        log "Keeping the source database configuration as requested."
     else
         local src_db
         src_db="$(get_env_value "$src_env" "DB_DATABASE")"
@@ -346,6 +392,12 @@ seed_env() {
             set_env_value "$dest_env" "DB_DATABASE" "$STAGING_DB"
             log "DB_DATABASE set to ${STAGING_DB} (not created; see the summary)."
         fi
+        # DB_URL is a full DSN that overrides DB_DATABASE entirely, so renaming the
+        # database above would otherwise still leave staging pointed at production.
+        if set_env_value_if_present "$dest_env" "DB_URL" ""; then
+            DB_URL_CLEARED=1
+            log "DB_URL cleared; it would have overridden DB_DATABASE."
+        fi
     fi
 
     if [[ "$KEEP_MAIL" -eq 1 ]]; then
@@ -353,6 +405,45 @@ seed_env() {
     else
         set_env_value "$dest_env" "MAIL_MAILER" "log"
         MAIL_NEUTRALISED=1
+    fi
+
+    isolate_shared_services "$dest_env"
+}
+
+# Cache, session and queue backends are frequently a shared Redis instance. Left
+# as copied, staging reads and evicts production's keys, and `cache:clear` on a
+# Redis store flushes the whole database rather than just this app's prefix.
+isolate_shared_services() {
+    local dest_env="$1"
+    if [[ "$KEEP_SERVICES" -eq 1 ]]; then
+        log "Keeping the source cache, session and queue configuration as requested."
+        return 0
+    fi
+
+    local changed=0
+    # CACHE_STORE on Laravel 11+, CACHE_DRIVER before it; only one will be present.
+    set_env_value_if_present "$dest_env" "CACHE_STORE" "file" && changed=1
+    set_env_value_if_present "$dest_env" "CACHE_DRIVER" "file" && changed=1
+    set_env_value_if_present "$dest_env" "SESSION_DRIVER" "file" && changed=1
+    # Otherwise staging pushes jobs onto production's queue, where production
+    # workers pick them up and run them against production data.
+    set_env_value_if_present "$dest_env" "QUEUE_CONNECTION" "sync" && changed=1
+
+    if [[ "$changed" -eq 1 ]]; then
+        SERVICES_ISOLATED=1
+        log "Cache and session moved to file drivers, queue set to sync."
+    fi
+}
+
+# Called after SSL so APP_URL only claims https once a certificate exists.
+finalize_env() {
+    local dest_env="${DEST_PATH}/.env"
+    [[ -f "$dest_env" || "$DRY_RUN" -eq 1 ]] || return 0
+    if [[ "$SSL_READY" -eq 1 ]]; then
+        set_env_value "$dest_env" "APP_URL" "https://${DOMAIN}"
+        log "APP_URL set to https://${DOMAIN}"
+    else
+        log "APP_URL left as http://${DOMAIN} because no certificate was issued."
     fi
 }
 
@@ -373,7 +464,10 @@ prepare_laravel() {
         run_cmd "$PHP_BINARY" "${DEST_PATH}/artisan" key:generate --force --no-interaction
     fi
 
-    if [[ -d "${SRC_PATH}/public/storage" ]]; then
+    # Gate on the destination's storage/app/public, which Laravel commits, rather
+    # than the source's public/storage symlink, which is gitignored and so is
+    # usually absent on a server deployed straight from a clone.
+    if [[ -d "${DEST_PATH}/storage/app/public" || "$DRY_RUN" -eq 1 ]]; then
         log "Linking storage into public/..."
         run_cmd "$PHP_BINARY" "${DEST_PATH}/artisan" storage:link --no-interaction || true
     fi
@@ -387,11 +481,12 @@ fix_permissions() {
     log "Applying file permissions..."
     run_cmd find "$DEST_PATH" -type f -exec chmod 644 {} +
     run_cmd find "$DEST_PATH" -type d -exec chmod 755 {} +
+    # +X sets the execute bit on directories only, leaving regular files at rw.
     if [[ -d "${DEST_PATH}/storage" ]]; then
-        run_cmd chmod -R ug+rwx "${DEST_PATH}/storage"
+        run_cmd chmod -R ug+rwX "${DEST_PATH}/storage"
     fi
     if [[ -d "${DEST_PATH}/bootstrap/cache" ]]; then
-        run_cmd chmod -R ug+rwx "${DEST_PATH}/bootstrap/cache"
+        run_cmd chmod -R ug+rwX "${DEST_PATH}/bootstrap/cache"
     fi
     run_cmd chown -R www-data:www-data "$DEST_PATH"
 }
@@ -574,8 +669,18 @@ print_summary() {
         echo "     DB_DATABASE is set to '${STAGING_DB}' and has NOT been created yet:"
         echo "       mysql -uroot -p -e \"CREATE DATABASE ${STAGING_DB};\""
     fi
+    if [[ "$DB_URL_CLEARED" -eq 1 ]]; then
+        echo "     DB_URL was cleared - it would have overridden DB_DATABASE."
+    fi
     if [[ "$MAIL_NEUTRALISED" -eq 1 ]]; then
         echo "     MAIL_MAILER was forced to 'log' so staging cannot email real users."
+    fi
+    if [[ "$SERVICES_ISOLATED" -eq 1 ]]; then
+        echo "     Cache/session use file drivers and the queue is sync, so staging"
+        echo "     cannot evict production cache keys or consume its jobs."
+    fi
+    if [[ "$APP_DEBUG_ON" -eq 1 ]]; then
+        echo "     APP_DEBUG=true was requested - error pages will render this .env."
     fi
     echo "  2. Run migrations: sudo -u www-data ${PHP_BINARY:-php} ${DEST_PATH}/artisan migrate"
     echo "  3. Config is intentionally left uncached so your .env edits take effect."
@@ -584,6 +689,12 @@ print_summary() {
     fi
     echo
 }
+
+# tests/run_tests.sh sources this file to unit test the helpers above without
+# running a deployment.
+if [[ -n "${SETUP_LARAVEL_LIB_ONLY:-}" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -599,6 +710,8 @@ while [[ $# -gt 0 ]]; do
         --with-storage) WITH_STORAGE=1; shift;;
         --keep-db-config) KEEP_DB_CONFIG=1; shift;;
         --keep-mail) KEEP_MAIL=1; shift;;
+        --keep-services) KEEP_SERVICES=1; shift;;
+        --debug) APP_DEBUG_ON=1; shift;;
         --scheduler) INSTALL_SCHEDULER=1; shift;;
         --queue) INSTALL_QUEUE=1; shift;;
         --dev) COMPOSER_DEV=1; shift;;
@@ -644,6 +757,8 @@ CLONE_METHOD=""
 CLONE_BRANCH=""
 STAGING_DB=""
 MAIL_NEUTRALISED=0
+DB_URL_CLEARED=0
+SERVICES_ISOLATED=0
 SSL_READY=0
 SSL_FAILED=0
 NGINX_CONF=""
@@ -679,6 +794,8 @@ prepare_laravel
 fix_permissions
 write_nginx_vhost
 request_ssl
+# APP_URL only claims https once a certificate actually exists.
+finalize_env
 install_scheduler
 install_queue_worker
 
